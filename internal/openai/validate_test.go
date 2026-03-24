@@ -12,6 +12,143 @@ func TestValidateResponsesRequestAcceptsSimpleTextInput(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestAcceptsEasyMessageInput(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role":    "user",
+			"content": "hello",
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected easy message input to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsExplicitMessageInput(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"type": "message",
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "input_text", "text": "hello"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected explicit message input to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsPlainStringRegression(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hello",
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected plain string input to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsArrayOfMessages(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: []map[string]any{
+			{
+				"role":    "user",
+				"content": "hello",
+			},
+			{
+				"type": "message",
+				"role": "developer",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "be brief"},
+				},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected array of messages input to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsAssistantEasyMessage(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "assistant",
+			"content": []map[string]any{
+				{"type": "output_text", "text": "hi"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected assistant easy message input to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestRejectsUnsupportedContentBlock(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "input_image", "image_url": "https://example.com/cat.png"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected unsupported content block validation error")
+	}
+}
+
+func TestValidateResponsesRequestRejectsNonMessageItem(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: []any{
+			map[string]any{
+				"role":    "user",
+				"content": "hello",
+			},
+			"not-a-message",
+		},
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected non-message item validation error")
+	}
+}
+
+func TestValidateResponsesRequestRejectsAssistantInputTextBlocks(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "assistant",
+			"content": []map[string]any{
+				{"type": "input_text", "text": "hi"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected assistant input_text block validation error")
+	}
+}
+
+func TestValidateResponsesRequestRejectsUserOutputTextBlocks(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "output_text", "text": "hi"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected user output_text block validation error")
+	}
+}
+
 func TestValidateResponsesRequestRejectsMissingModel(t *testing.T) {
 	req := ResponsesRequest{Input: "hi"}
 	if err := ValidateResponsesRequest(req); err == nil {
@@ -44,16 +181,6 @@ func TestValidateResponsesRequestRejectsUnsupportedFields(t *testing.T) {
 	}
 	if err := ValidateResponsesRequest(req); err == nil {
 		t.Fatal("expected unsupported-field validation error")
-	}
-}
-
-func TestValidateResponsesRequestRejectsStructuredInput(t *testing.T) {
-	req := ResponsesRequest{
-		Model: "model",
-		Input: []map[string]any{{"type": "input_text", "text": "hi"}},
-	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected structured-input validation error")
 	}
 }
 
