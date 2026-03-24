@@ -1,9 +1,9 @@
 package bedrock
 
 import (
-	"fmt"
 	"math"
 
+	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
@@ -27,45 +27,43 @@ type ConverseRequest struct {
 	ToolConfig  *ToolConfig
 }
 
-func TranslateRequest(req openai.ResponsesRequest) (ConverseRequest, error) {
-	msgs, err := normalizeInput(req.Input)
-	if err != nil {
-		return ConverseRequest{}, err
-	}
-
+func TranslateConversation(modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (ConverseRequest, error) {
 	out := ConverseRequest{
-		ModelID:  req.Model,
-		Messages: msgs,
+		ModelID:  modelID,
+		System:   append([]string(nil), req.System...),
+		Messages: toBedrockConversationMessages(req.Messages),
 	}
-	if req.Instructions != "" {
-		out.System = []string{req.Instructions}
-	}
-	if req.MaxOutputTokens != nil {
-		if *req.MaxOutputTokens < 0 || *req.MaxOutputTokens > math.MaxInt32 {
+	if maxOutputTokens != nil {
+		if *maxOutputTokens < 0 || *maxOutputTokens > math.MaxInt32 {
 			return ConverseRequest{}, openai.NewInvalidRequestError("max_output_tokens is out of range")
 		}
-		maxTokens := int32(*req.MaxOutputTokens)
+		maxTokens := int32(*maxOutputTokens)
 		out.MaxTokens = &maxTokens
 	}
-	if req.Temperature != nil {
-		temperature := float32(*req.Temperature)
-		out.Temperature = &temperature
+	if temperature != nil {
+		temperature32 := float32(*temperature)
+		out.Temperature = &temperature32
 	}
 	return out, nil
 }
 
-func normalizeInput(input any) ([]Message, error) {
-	text, ok := input.(string)
-	if !ok {
-		return nil, openai.NewInvalidRequestError(fmt.Sprintf("unsupported input type %T", input))
+func TranslateRequest(req openai.ResponsesRequest) (ConverseRequest, error) {
+	normalized, err := conversation.NormalizeRequest(req)
+	if err != nil {
+		return ConverseRequest{}, err
 	}
+	return TranslateConversation(req.Model, normalized, req.MaxOutputTokens, req.Temperature)
+}
 
-	return []Message{
-		{
-			Role: "user",
+func toBedrockConversationMessages(messages []conversation.Message) []Message {
+	out := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		out = append(out, Message{
+			Role: message.Role,
 			Content: []ContentBlock{
-				{Text: text},
+				{Text: message.Text},
 			},
-		},
-	}, nil
+		})
+	}
+	return out
 }

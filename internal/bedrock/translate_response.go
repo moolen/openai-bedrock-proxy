@@ -8,6 +8,18 @@ type ConverseResponse struct {
 	StopReason string
 }
 
+type TextAccumulator struct {
+	text string
+}
+
+func (t *TextAccumulator) Add(delta string) {
+	t.text += delta
+}
+
+func (t *TextAccumulator) Text() string {
+	return t.text
+}
+
 func TranslateResponse(resp ConverseResponse, model string) openai.Response {
 	return openai.Response{
 		ID:     "resp_" + resp.ResponseID,

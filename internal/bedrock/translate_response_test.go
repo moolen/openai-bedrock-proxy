@@ -37,3 +37,14 @@ func TestTranslateConverseResponseBuildsOutputText(t *testing.T) {
 		t.Fatalf("expected text content to pass through, got %q", got.Output[0].Content[0].Text)
 	}
 }
+
+func TestTextAccumulatorJoinsAllDeltas(t *testing.T) {
+	accumulator := TextAccumulator{}
+	accumulator.Add("hello")
+	accumulator.Add(" ")
+	accumulator.Add("world")
+
+	if got := accumulator.Text(); got != "hello world" {
+		t.Fatalf("expected joined text, got %q", got)
+	}
+}

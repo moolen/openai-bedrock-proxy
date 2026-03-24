@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
@@ -54,41 +55,44 @@ func (c *Client) ConverseStream(ctx context.Context, input *bedrockruntime.Conve
 	return c.runtime.ConverseStream(ctx, input, optFns...)
 }
 
-func (c *Client) Respond(ctx context.Context, req openai.ResponsesRequest) (openai.Response, error) {
-	translated, err := TranslateRequest(req)
+func (c *Client) RespondConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (ConverseResponse, error) {
+	translated, err := TranslateConversation(modelID, req, maxOutputTokens, temperature)
 	if err != nil {
-		return openai.Response{}, err
+		return ConverseResponse{}, err
 	}
 
 	input := toConverseInput(translated)
 
 	resp, err := c.runtime.Converse(ctx, input)
 	if err != nil {
-		return openai.Response{}, err
+		return ConverseResponse{}, err
 	}
 
-	return TranslateResponse(ConverseResponse{
+	return ConverseResponse{
 		ResponseID: responseIDFromMetadata(resp),
 		Text:       extractText(resp),
-	}, req.Model), nil
+	}, nil
 }
 
-func (c *Client) Stream(ctx context.Context, req openai.ResponsesRequest, w http.ResponseWriter) error {
-	translated, err := TranslateRequest(req)
+func (c *Client) StreamConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64, w http.ResponseWriter) (ConverseResponse, error) {
+	translated, err := TranslateConversation(modelID, req, maxOutputTokens, temperature)
 	if err != nil {
-		return err
+		return ConverseResponse{}, err
 	}
 
 	resp, err := c.runtime.ConverseStream(ctx, toConverseStreamInput(translated))
 	if err != nil {
-		return err
+		return ConverseResponse{}, err
 	}
 
 	stream := resp.GetStream()
 	if stream == nil {
-		return errors.New("bedrock stream was nil")
+		return ConverseResponse{}, errors.New("bedrock stream was nil")
 	}
 	defer stream.Close()
+
+	var accumulator TextAccumulator
+	stopReason := ""
 
 	for event := range stream.Events() {
 		switch typed := event.(type) {
@@ -97,21 +101,48 @@ func (c *Client) Stream(ctx context.Context, req openai.ResponsesRequest, w http
 			if !ok {
 				continue
 			}
+			accumulator.Add(textDelta.Value)
 			if err := openai.WriteEvent(w, "response.output_text.delta", map[string]any{
 				"delta": textDelta.Value,
 			}); err != nil {
-				return err
+				return ConverseResponse{}, err
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
+			stopReason = string(typed.Value.StopReason)
 			if err := openai.WriteEvent(w, "response.completed", map[string]any{
-				"status": string(typed.Value.StopReason),
+				"status": stopReason,
 			}); err != nil {
-				return err
+				return ConverseResponse{}, err
 			}
 		}
 	}
 
-	return stream.Err()
+	return ConverseResponse{
+		ResponseID: responseIDFromStreamMetadata(resp),
+		Text:       accumulator.Text(),
+		StopReason: stopReason,
+	}, stream.Err()
+}
+
+func (c *Client) Respond(ctx context.Context, req openai.ResponsesRequest) (openai.Response, error) {
+	normalized, err := conversation.NormalizeRequest(req)
+	if err != nil {
+		return openai.Response{}, err
+	}
+	resp, err := c.RespondConversation(ctx, req.Model, normalized, req.MaxOutputTokens, req.Temperature)
+	if err != nil {
+		return openai.Response{}, err
+	}
+	return TranslateResponse(resp, req.Model), nil
+}
+
+func (c *Client) Stream(ctx context.Context, req openai.ResponsesRequest, w http.ResponseWriter) error {
+	normalized, err := conversation.NormalizeRequest(req)
+	if err != nil {
+		return err
+	}
+	_, err = c.StreamConversation(ctx, req.Model, normalized, req.MaxOutputTokens, req.Temperature, w)
+	return err
 }
 
 func toConverseInput(req ConverseRequest) *bedrockruntime.ConverseInput {
@@ -186,6 +217,15 @@ func extractText(resp *bedrockruntime.ConverseOutput) string {
 }
 
 func responseIDFromMetadata(resp *bedrockruntime.ConverseOutput) string {
+	if resp != nil {
+		if requestID, ok := awsmiddleware.GetRequestIDMetadata(resp.ResultMetadata); ok && requestID != "" {
+			return requestID
+		}
+	}
+	return fallbackResponseID()
+}
+
+func responseIDFromStreamMetadata(resp *bedrockruntime.ConverseStreamOutput) string {
 	if resp != nil {
 		if requestID, ok := awsmiddleware.GetRequestIDMetadata(resp.ResultMetadata); ok && requestID != "" {
 			return requestID
