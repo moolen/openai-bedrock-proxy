@@ -24,8 +24,17 @@ type RuntimeAPI interface {
 type LoadConfigFunc func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error)
 
 type Client struct {
-	runtime RuntimeAPI
+	runtime       RuntimeAPI
+	streamAdapter streamAdapterFunc
 }
+
+type streamEvents interface {
+	Events() <-chan bedrocktypes.ConverseStreamOutput
+	Close() error
+	Err() error
+}
+
+type streamAdapterFunc func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error)
 
 func NewClient(ctx context.Context, region string, loadConfig LoadConfigFunc) (*Client, error) {
 	if loadConfig == nil {
@@ -84,47 +93,22 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 	if err != nil {
 		return ConverseResponse{}, err
 	}
-	if resp == nil {
-		return ConverseResponse{}, errors.New("bedrock stream response was nil")
+	adapter := c.streamAdapter
+	if adapter == nil {
+		adapter = defaultStreamAdapter
 	}
-
-	stream := resp.GetStream()
-	if stream == nil {
-		return ConverseResponse{}, errors.New("bedrock stream was nil")
+	stream, err := adapter(resp)
+	if err != nil {
+		return ConverseResponse{}, err
 	}
 	defer stream.Close()
 
-	var accumulator TextAccumulator
-	stopReason := ""
-
-	for event := range stream.Events() {
-		switch typed := event.(type) {
-		case *bedrocktypes.ConverseStreamOutputMemberContentBlockDelta:
-			textDelta, ok := typed.Value.Delta.(*bedrocktypes.ContentBlockDeltaMemberText)
-			if !ok {
-				continue
-			}
-			accumulator.Add(textDelta.Value)
-			if err := openai.WriteEvent(w, "response.output_text.delta", map[string]any{
-				"delta": textDelta.Value,
-			}); err != nil {
-				return ConverseResponse{}, err
-			}
-		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
-			stopReason = string(typed.Value.StopReason)
-			if err := openai.WriteEvent(w, "response.completed", map[string]any{
-				"status": stopReason,
-			}); err != nil {
-				return ConverseResponse{}, err
-			}
-		}
-	}
-
+	text, stopReason, err := processStream(stream, w)
 	return ConverseResponse{
 		ResponseID: responseIDFromStreamMetadata(resp),
-		Text:       accumulator.Text(),
+		Text:       text,
 		StopReason: stopReason,
-	}, stream.Err()
+	}, err
 }
 
 func (c *Client) Respond(ctx context.Context, req openai.ResponsesRequest) (openai.Response, error) {
@@ -235,6 +219,47 @@ func responseIDFromStreamMetadata(resp *bedrockruntime.ConverseStreamOutput) str
 		}
 	}
 	return fallbackResponseID()
+}
+
+func defaultStreamAdapter(resp *bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+	if resp == nil {
+		return nil, errors.New("bedrock stream response was nil")
+	}
+	stream := resp.GetStream()
+	if stream == nil {
+		return nil, errors.New("bedrock stream was nil")
+	}
+	return stream, nil
+}
+
+func processStream(stream streamEvents, w http.ResponseWriter) (string, string, error) {
+	var accumulator TextAccumulator
+	stopReason := ""
+
+	for event := range stream.Events() {
+		switch typed := event.(type) {
+		case *bedrocktypes.ConverseStreamOutputMemberContentBlockDelta:
+			textDelta, ok := typed.Value.Delta.(*bedrocktypes.ContentBlockDeltaMemberText)
+			if !ok {
+				continue
+			}
+			accumulator.Add(textDelta.Value)
+			if err := openai.WriteEvent(w, "response.output_text.delta", map[string]any{
+				"delta": textDelta.Value,
+			}); err != nil {
+				return "", "", err
+			}
+		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
+			stopReason = string(typed.Value.StopReason)
+			if err := openai.WriteEvent(w, "response.completed", map[string]any{
+				"status": stopReason,
+			}); err != nil {
+				return "", "", err
+			}
+		}
+	}
+
+	return accumulator.Text(), stopReason, stream.Err()
 }
 
 func fallbackResponseID() string {

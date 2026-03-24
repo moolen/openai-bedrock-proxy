@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
-	"reflect"
 	"testing"
-	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -220,15 +218,13 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	}
 	close(events)
 
-	reader := &fakeConverseStreamReader{events: events, err: streamErr}
-	stream := bedrockruntime.NewConverseStreamEventStream(func(es *bedrockruntime.ConverseStreamEventStream) {
-		es.Reader = reader
-	})
-
-	converseStreamOutput := &bedrockruntime.ConverseStreamOutput{}
-	setConverseStreamOutputStream(converseStreamOutput, stream)
-
-	client := &Client{runtime: &fakeRuntime{converseStreamOutput: converseStreamOutput}}
+	stream := &fakeStream{events: events, err: streamErr}
+	client := &Client{
+		runtime: &fakeRuntime{converseStreamOutput: &bedrockruntime.ConverseStreamOutput{}},
+		streamAdapter: func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+			return stream, nil
+		},
+	}
 	recorder := httptest.NewRecorder()
 
 	resp, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{
@@ -248,6 +244,56 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	}
 	expected := "event: response.output_text.delta\ndata: {\"delta\":\"hello\"}\n\n" +
 		"event: response.output_text.delta\ndata: {\"delta\":\" world\"}\n\n" +
+		"event: response.completed\ndata: {\"status\":\"end_turn\"}\n\n"
+	if got := recorder.Body.String(); got != expected {
+		t.Fatalf("expected SSE body %q, got %q", expected, got)
+	}
+}
+
+func TestClientStreamWrapperNormalizesAndStreams(t *testing.T) {
+	events := make(chan bedrocktypes.ConverseStreamOutput, 2)
+	events <- &bedrocktypes.ConverseStreamOutputMemberContentBlockDelta{
+		Value: bedrocktypes.ContentBlockDeltaEvent{
+			ContentBlockIndex: aws.Int32(0),
+			Delta:             &bedrocktypes.ContentBlockDeltaMemberText{Value: "hi"},
+		},
+	}
+	events <- &bedrocktypes.ConverseStreamOutputMemberMessageStop{
+		Value: bedrocktypes.MessageStopEvent{StopReason: bedrocktypes.StopReasonEndTurn},
+	}
+	close(events)
+
+	stream := &fakeStream{events: events, err: nil}
+	runtime := &fakeRuntime{converseStreamOutput: &bedrockruntime.ConverseStreamOutput{}}
+	client := &Client{
+		runtime: runtime,
+		streamAdapter: func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+			return stream, nil
+		},
+	}
+	recorder := httptest.NewRecorder()
+
+	err := client.Stream(context.Background(), openai.ResponsesRequest{
+		Model:        "model-id",
+		Instructions: "be terse",
+		Input:        "hello",
+	}, recorder)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastConverseStreamInput == nil {
+		t.Fatal("expected converse stream input to be captured")
+	}
+	if got := aws.ToString(runtime.lastConverseStreamInput.ModelId); got != "model-id" {
+		t.Fatalf("expected model id passthrough, got %q", got)
+	}
+	if len(runtime.lastConverseStreamInput.System) != 1 {
+		t.Fatalf("expected system to normalize, got %d", len(runtime.lastConverseStreamInput.System))
+	}
+	if len(runtime.lastConverseStreamInput.Messages) != 1 {
+		t.Fatalf("expected one user message, got %d", len(runtime.lastConverseStreamInput.Messages))
+	}
+	expected := "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n" +
 		"event: response.completed\ndata: {\"status\":\"end_turn\"}\n\n"
 	if got := recorder.Body.String(); got != expected {
 		t.Fatalf("expected SSE body %q, got %q", expected, got)
@@ -276,24 +322,19 @@ func (f *fakeRuntime) ConverseStream(_ context.Context, input *bedrockruntime.Co
 	return f.converseStreamOutput, f.converseStreamErr
 }
 
-type fakeConverseStreamReader struct {
+type fakeStream struct {
 	events chan bedrocktypes.ConverseStreamOutput
 	err    error
 }
 
-func (f *fakeConverseStreamReader) Events() <-chan bedrocktypes.ConverseStreamOutput {
+func (f *fakeStream) Events() <-chan bedrocktypes.ConverseStreamOutput {
 	return f.events
 }
 
-func (f *fakeConverseStreamReader) Close() error {
+func (f *fakeStream) Close() error {
 	return nil
 }
 
-func (f *fakeConverseStreamReader) Err() error {
+func (f *fakeStream) Err() error {
 	return f.err
-}
-
-func setConverseStreamOutputStream(output *bedrockruntime.ConverseStreamOutput, stream *bedrockruntime.ConverseStreamEventStream) {
-	value := reflect.ValueOf(output).Elem().FieldByName("eventStream")
-	reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().Set(reflect.ValueOf(stream))
 }
