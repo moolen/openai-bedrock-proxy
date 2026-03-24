@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -44,5 +45,30 @@ func TestNewClientAppliesRegionOverride(t *testing.T) {
 	}
 	if captured.Region != "eu-central-1" {
 		t.Fatalf("expected region override, got %q", captured.Region)
+	}
+}
+
+func TestNewClientRejectsNilLoader(t *testing.T) {
+	client, err := NewClient(context.Background(), "", nil)
+	if err == nil {
+		t.Fatal("expected nil loader error")
+	}
+	if client != nil {
+		t.Fatal("expected no client when loader is nil")
+	}
+}
+
+func TestNewClientPropagatesLoaderError(t *testing.T) {
+	want := errors.New("load failed")
+	loader := func(ctx context.Context, optFns ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{}, want
+	}
+
+	client, err := NewClient(context.Background(), "", loader)
+	if !errors.Is(err, want) {
+		t.Fatalf("expected loader error, got %v", err)
+	}
+	if client != nil {
+		t.Fatal("expected no client on loader error")
 	}
 }
