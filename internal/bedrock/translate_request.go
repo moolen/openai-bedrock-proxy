@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
@@ -40,6 +41,9 @@ func TranslateRequest(req openai.ResponsesRequest) (ConverseRequest, error) {
 		out.System = []string{req.Instructions}
 	}
 	if req.MaxOutputTokens != nil {
+		if *req.MaxOutputTokens < 0 || *req.MaxOutputTokens > math.MaxInt32 {
+			return ConverseRequest{}, openai.NewInvalidRequestError("max_output_tokens is out of range")
+		}
 		maxTokens := int32(*req.MaxOutputTokens)
 		out.MaxTokens = &maxTokens
 	}
