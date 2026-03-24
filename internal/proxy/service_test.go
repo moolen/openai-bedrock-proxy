@@ -1,0 +1,247 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/moolen/openai-bedrock-proxy/internal/bedrock"
+	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
+	"github.com/moolen/openai-bedrock-proxy/internal/openai"
+)
+
+type recordingStore struct {
+	records map[string]conversation.Record
+	saved   int
+	last    conversation.Record
+}
+
+func newRecordingStore() *recordingStore {
+	return &recordingStore{records: make(map[string]conversation.Record)}
+}
+
+func (s *recordingStore) Get(id string) (conversation.Record, bool) {
+	record, ok := s.records[id]
+	if !ok {
+		return conversation.Record{}, false
+	}
+	record.Messages = append([]conversation.Message(nil), record.Messages...)
+	return record, true
+}
+
+func (s *recordingStore) Save(record conversation.Record) {
+	s.saved++
+	record.Messages = append([]conversation.Message(nil), record.Messages...)
+	s.records[record.ResponseID] = record
+	s.last = record
+}
+
+type fakeBedrock struct {
+	respondResp bedrock.ConverseResponse
+	respondErr  error
+	streamResp  bedrock.ConverseResponse
+	streamErr   error
+
+	respondCalls int
+	streamCalls  int
+	lastModel    string
+	lastRequest  conversation.Request
+}
+
+func (f *fakeBedrock) RespondConversation(_ context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (bedrock.ConverseResponse, error) {
+	f.respondCalls++
+	f.lastModel = modelID
+	f.lastRequest = req
+	return f.respondResp, f.respondErr
+}
+
+func (f *fakeBedrock) StreamConversation(_ context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64, w http.ResponseWriter) (bedrock.ConverseResponse, error) {
+	f.streamCalls++
+	f.lastModel = modelID
+	f.lastRequest = req
+	if w != nil {
+		_, _ = w.Write([]byte(""))
+	}
+	return f.streamResp, f.streamErr
+}
+
+func TestServiceRespondUsesPreviousResponseSnapshot(t *testing.T) {
+	store := newRecordingStore()
+	store.Save(conversation.Record{
+		ResponseID: "resp_prev",
+		ModelID:    "old-model",
+		Messages: []conversation.Message{
+			{Role: "user", Text: "hi"},
+			{Role: "assistant", Text: "hello"},
+		},
+	})
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "1", Text: "ok"}}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "model",
+		Input:              "next",
+		PreviousResponseID: "resp_prev",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	got := client.lastRequest.Messages
+	if len(got) != 3 {
+		t.Fatalf("expected 3 merged messages, got %d", len(got))
+	}
+	if got[0].Role != "user" || got[0].Text != "hi" {
+		t.Fatalf("expected first message to be previous user, got %#v", got[0])
+	}
+	if got[1].Role != "assistant" || got[1].Text != "hello" {
+		t.Fatalf("expected second message to be previous assistant, got %#v", got[1])
+	}
+	if got[2].Role != "user" || got[2].Text != "next" {
+		t.Fatalf("expected third message to be current user, got %#v", got[2])
+	}
+}
+
+func TestServiceRespondRebuildsTurnLocalSystemContext(t *testing.T) {
+	store := newRecordingStore()
+	store.Save(conversation.Record{
+		ResponseID: "resp_prev",
+		ModelID:    "old-model",
+		Messages: []conversation.Message{
+			{Role: "user", Text: "hi"},
+			{Role: "assistant", Text: "hello"},
+		},
+	})
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "1", Text: "ok"}}
+	svc := NewService(client, store)
+
+	input := []any{
+		map[string]any{"role": "system", "content": "sys"},
+		map[string]any{"role": "user", "content": "next"},
+	}
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "model",
+		Input:              input,
+		Instructions:       "rules",
+		PreviousResponseID: "resp_prev",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	got := client.lastRequest.System
+	if len(got) != 2 {
+		t.Fatalf("expected 2 system entries, got %d", len(got))
+	}
+	if got[0] != "sys" || got[1] != "rules" {
+		t.Fatalf("expected system to be rebuilt from current request, got %#v", got)
+	}
+}
+
+func TestServiceRespondPersistsAssistantReplyInSnapshot(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "abc", Text: "assistant"}}
+	svc := NewService(client, store)
+
+	resp, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if store.saved != 1 {
+		t.Fatalf("expected 1 saved record, got %d", store.saved)
+	}
+	if store.last.ResponseID != resp.ID {
+		t.Fatalf("expected record to use response id %q, got %q", resp.ID, store.last.ResponseID)
+	}
+	if len(store.last.Messages) != 2 {
+		t.Fatalf("expected 2 messages in snapshot, got %d", len(store.last.Messages))
+	}
+	if store.last.Messages[1].Role != "assistant" || store.last.Messages[1].Text != "assistant" {
+		t.Fatalf("expected assistant reply to be persisted, got %#v", store.last.Messages[1])
+	}
+}
+
+func TestServiceRespondUsesIncomingModelForContinuation(t *testing.T) {
+	store := newRecordingStore()
+	store.Save(conversation.Record{
+		ResponseID: "resp_prev",
+		ModelID:    "old-model",
+		Messages: []conversation.Message{
+			{Role: "user", Text: "hi"},
+		},
+	})
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "1", Text: "ok"}}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "new-model",
+		Input:              "next",
+		PreviousResponseID: "resp_prev",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if client.lastModel != "new-model" {
+		t.Fatalf("expected model to come from incoming request, got %q", client.lastModel)
+	}
+}
+
+func TestServiceRespondDoesNotPersistFailedResponse(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{respondErr: errors.New("bedrock fail")}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if store.saved != 0 {
+		t.Fatalf("expected no saved record, got %d", store.saved)
+	}
+}
+
+func TestServiceStreamPersistsOnlyAfterCleanCompletion(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{streamResp: bedrock.ConverseResponse{ResponseID: "stream", Text: "done"}}
+	svc := NewService(client, store)
+
+	err := svc.Stream(context.Background(), openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+	}, httptest.NewRecorder())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if store.saved != 1 {
+		t.Fatalf("expected 1 saved record, got %d", store.saved)
+	}
+	if store.last.ResponseID != "resp_stream" {
+		t.Fatalf("expected stored response id resp_stream, got %q", store.last.ResponseID)
+	}
+}
+
+func TestServiceStreamDoesNotPersistFailedStream(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{streamErr: errors.New("stream failed")}
+	svc := NewService(client, store)
+
+	err := svc.Stream(context.Background(), openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+	}, httptest.NewRecorder())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if store.saved != 0 {
+		t.Fatalf("expected no saved record, got %d", store.saved)
+	}
+}

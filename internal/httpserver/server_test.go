@@ -179,3 +179,14 @@ func TestResponsesHandlerReturnsBadGatewayForUpstreamErrors(t *testing.T) {
 		t.Fatalf("expected 502, got %d", rec.Code)
 	}
 }
+
+func TestResponsesHandlerReturnsBadRequestForUnknownPreviousResponseID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","previous_response_id":"resp_missing"}`))
+
+	NewServer(&fakeService{err: openai.NewInvalidRequestError("unknown previous response id")}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
