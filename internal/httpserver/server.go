@@ -41,11 +41,16 @@ func handleResponses(svc Service) http.HandlerFunc {
 				writeError(w, http.StatusNotImplemented, openai.NewInvalidRequestError("streaming is not supported"))
 				return
 			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			if err := streamSvc.Stream(r.Context(), req, w); err != nil {
-				_ = openai.WriteEvent(w, "error", openai.ErrorResponseFrom(err))
+			tw := &trackingResponseWriter{ResponseWriter: w}
+			tw.Header().Set("Content-Type", "text/event-stream")
+			tw.Header().Set("Cache-Control", "no-cache")
+			tw.Header().Set("Connection", "keep-alive")
+			if err := streamSvc.Stream(r.Context(), req, tw); err != nil {
+				if !tw.started {
+					writeError(w, statusCodeFor(err), err)
+					return
+				}
+				_ = openai.WriteEvent(tw, "error", openai.ErrorResponseFrom(err))
 			}
 			return
 		}
@@ -84,4 +89,19 @@ func statusCodeFor(err error) int {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
+}
+
+type trackingResponseWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (w *trackingResponseWriter) WriteHeader(statusCode int) {
+	w.started = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *trackingResponseWriter) Write(p []byte) (int, error) {
+	w.started = true
+	return w.ResponseWriter.Write(p)
 }

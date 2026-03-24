@@ -12,6 +12,7 @@
 *.out
 coverage.out
 bin/
+/openai-bedrock-proxy
 
 # Editor and OS files
 .DS_Store

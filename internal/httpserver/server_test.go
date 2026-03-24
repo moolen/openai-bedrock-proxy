@@ -81,10 +81,69 @@ type fakeService struct {
 	err         error
 	calls       int
 	lastRequest openai.ResponsesRequest
+	streamErr   error
+	streamBody  string
 }
 
 func (s *fakeService) Respond(_ context.Context, req openai.ResponsesRequest) (openai.Response, error) {
 	s.calls++
 	s.lastRequest = req
 	return s.response, s.err
+}
+
+func (s *fakeService) Stream(_ context.Context, req openai.ResponsesRequest, w http.ResponseWriter) error {
+	s.calls++
+	s.lastRequest = req
+	if s.streamBody != "" {
+		if _, err := w.Write([]byte(s.streamBody)); err != nil {
+			return err
+		}
+	}
+	return s.streamErr
+}
+
+func TestResponsesHandlerReturnsNotImplementedForStreamingWhenServiceDoesNotSupportIt(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","stream":true}`))
+
+	NewServer(struct{ Service }{}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", rec.Code)
+	}
+}
+
+func TestResponsesHandlerReturnsJSONErrorForEarlyStreamingFailure(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","stream":true}`))
+
+	NewServer(&fakeService{streamErr: openai.NewInvalidRequestError("stream failed")}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	var body openai.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected valid error response, got %v", err)
+	}
+	if body.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected invalid request error type, got %q", body.Error.Type)
+	}
+}
+
+func TestResponsesHandlerStreamsWhenServiceSupportsIt(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","stream":true}`))
+
+	NewServer(&fakeService{streamBody: "event: response.completed\ndata: {\"status\":\"ok\"}\n\n"}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected text/event-stream content type, got %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), "event: response.completed") {
+		t.Fatalf("expected streamed body, got %q", rec.Body.String())
+	}
 }
