@@ -9,7 +9,10 @@ import (
 	"testing"
 
 	"github.com/aws/smithy-go"
+	"github.com/moolen/openai-bedrock-proxy/internal/bedrock"
+	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
+	"github.com/moolen/openai-bedrock-proxy/internal/proxy"
 )
 
 func TestResponsesHandlerIgnoresAuthorizationHeader(t *testing.T) {
@@ -184,9 +187,31 @@ func TestResponsesHandlerReturnsBadRequestForUnknownPreviousResponseID(t *testin
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","previous_response_id":"resp_missing"}`))
 
-	NewServer(&fakeService{err: openai.NewInvalidRequestError("unknown previous response id")}).ServeHTTP(rec, req)
+	store := conversation.NewInMemoryStore(10)
+	svc := proxy.NewService(&fakeBedrockProxy{}, store)
+	NewServer(svc).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	var body openai.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected valid error response, got %v", err)
+	}
+	if body.Error.Message != "unknown previous_response_id" {
+		t.Fatalf("expected canonical message, got %q", body.Error.Message)
+	}
+}
+
+type fakeBedrockProxy struct {
+	respondCalls int
+}
+
+func (f *fakeBedrockProxy) RespondConversation(context.Context, string, conversation.Request, *int, *float64) (bedrock.ConverseResponse, error) {
+	f.respondCalls++
+	return bedrock.ConverseResponse{}, nil
+}
+
+func (f *fakeBedrockProxy) StreamConversation(context.Context, string, conversation.Request, *int, *float64, http.ResponseWriter) (bedrock.ConverseResponse, error) {
+	return bedrock.ConverseResponse{}, nil
 }

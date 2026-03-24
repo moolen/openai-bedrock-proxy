@@ -142,12 +142,21 @@ func TestServiceRespondRebuildsTurnLocalSystemContext(t *testing.T) {
 
 func TestServiceRespondPersistsAssistantReplyInSnapshot(t *testing.T) {
 	store := newRecordingStore()
+	store.records["resp_prev"] = conversation.Record{
+		ResponseID: "resp_prev",
+		ModelID:    "old-model",
+		Messages: []conversation.Message{
+			{Role: "user", Text: "prior"},
+			{Role: "assistant", Text: "context"},
+		},
+	}
 	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "abc", Text: "assistant"}}
 	svc := NewService(client, store)
 
 	resp, err := svc.Respond(context.Background(), openai.ResponsesRequest{
-		Model: "model",
-		Input: "hi",
+		Model:              "model",
+		Input:              "hi",
+		PreviousResponseID: "resp_prev",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -159,11 +168,20 @@ func TestServiceRespondPersistsAssistantReplyInSnapshot(t *testing.T) {
 	if store.last.ResponseID != resp.ID {
 		t.Fatalf("expected record to use response id %q, got %q", resp.ID, store.last.ResponseID)
 	}
-	if len(store.last.Messages) != 2 {
-		t.Fatalf("expected 2 messages in snapshot, got %d", len(store.last.Messages))
+	if len(store.last.Messages) != 4 {
+		t.Fatalf("expected 4 messages in snapshot, got %d", len(store.last.Messages))
 	}
-	if store.last.Messages[1].Role != "assistant" || store.last.Messages[1].Text != "assistant" {
-		t.Fatalf("expected assistant reply to be persisted, got %#v", store.last.Messages[1])
+	if store.last.Messages[0].Role != "user" || store.last.Messages[0].Text != "prior" {
+		t.Fatalf("expected prior user message to be persisted, got %#v", store.last.Messages[0])
+	}
+	if store.last.Messages[1].Role != "assistant" || store.last.Messages[1].Text != "context" {
+		t.Fatalf("expected prior assistant message to be persisted, got %#v", store.last.Messages[1])
+	}
+	if store.last.Messages[2].Role != "user" || store.last.Messages[2].Text != "hi" {
+		t.Fatalf("expected current user message to be persisted, got %#v", store.last.Messages[2])
+	}
+	if store.last.Messages[3].Role != "assistant" || store.last.Messages[3].Text != "assistant" {
+		t.Fatalf("expected assistant reply to be persisted, got %#v", store.last.Messages[3])
 	}
 }
 
@@ -203,6 +221,34 @@ func TestServiceRespondDoesNotPersistFailedResponse(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+	if store.saved != 0 {
+		t.Fatalf("expected no saved record, got %d", store.saved)
+	}
+}
+
+func TestServiceRespondReturnsInvalidRequestForUnknownPreviousResponseID(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "model",
+		Input:              "hi",
+		PreviousResponseID: "resp_missing",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var invalid openai.InvalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected invalid request error, got %T", err)
+	}
+	if invalid.Message != "unknown previous_response_id" {
+		t.Fatalf("expected canonical message, got %q", invalid.Message)
+	}
+	if client.respondCalls != 0 {
+		t.Fatalf("expected bedrock not to be called, got %d", client.respondCalls)
 	}
 	if store.saved != 0 {
 		t.Fatalf("expected no saved record, got %d", store.saved)
