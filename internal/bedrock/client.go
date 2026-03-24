@@ -84,6 +84,9 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 	if err != nil {
 		return ConverseResponse{}, err
 	}
+	if resp == nil {
+		return ConverseResponse{}, errors.New("bedrock stream response was nil")
+	}
 
 	stream := resp.GetStream()
 	if stream == nil {

@@ -1,6 +1,10 @@
 package bedrock
 
-import "github.com/moolen/openai-bedrock-proxy/internal/openai"
+import (
+	"strings"
+
+	"github.com/moolen/openai-bedrock-proxy/internal/openai"
+)
 
 type ConverseResponse struct {
 	ResponseID string
@@ -9,15 +13,15 @@ type ConverseResponse struct {
 }
 
 type TextAccumulator struct {
-	text string
+	builder strings.Builder
 }
 
 func (t *TextAccumulator) Add(delta string) {
-	t.text += delta
+	t.builder.WriteString(delta)
 }
 
 func (t *TextAccumulator) Text() string {
-	return t.text
+	return t.builder.String()
 }
 
 func TranslateResponse(resp ConverseResponse, model string) openai.Response {
