@@ -1,5 +1,7 @@
 package openai
 
+import "errors"
+
 type ErrorBody struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
@@ -22,20 +24,29 @@ func (e InvalidRequestError) Error() string {
 }
 
 func ErrorResponseFrom(err error) ErrorResponse {
-	switch typed := err.(type) {
-	case InvalidRequestError:
+	if err == nil {
 		return ErrorResponse{
 			Error: ErrorBody{
-				Message: typed.Message,
-				Type:    "invalid_request_error",
-			},
-		}
-	default:
-		return ErrorResponse{
-			Error: ErrorBody{
-				Message: err.Error(),
+				Message: "internal server error",
 				Type:    "server_error",
 			},
 		}
+	}
+
+	var invalidRequest InvalidRequestError
+	if errors.As(err, &invalidRequest) {
+		return ErrorResponse{
+			Error: ErrorBody{
+				Message: invalidRequest.Message,
+				Type:    "invalid_request_error",
+			},
+		}
+	}
+
+	return ErrorResponse{
+		Error: ErrorBody{
+			Message: err.Error(),
+			Type:    "server_error",
+		},
 	}
 }

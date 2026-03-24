@@ -19,6 +19,23 @@ func TestValidateResponsesRequestRejectsMissingModel(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestRejectsMissingInput(t *testing.T) {
+	req := ResponsesRequest{Model: "model"}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected missing-input validation error")
+	}
+}
+
+func TestValidateResponsesRequestRejectsEmptyStringInput(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "",
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected empty-input validation error")
+	}
+}
+
 func TestValidateResponsesRequestRejectsUnsupportedFields(t *testing.T) {
 	req := ResponsesRequest{
 		Model:             "model",
@@ -30,6 +47,29 @@ func TestValidateResponsesRequestRejectsUnsupportedFields(t *testing.T) {
 	}
 }
 
+func TestErrorResponseFromClassifiesWrappedInvalidRequestErrors(t *testing.T) {
+	err := NewInvalidRequestError("bad request")
+	resp := ErrorResponseFrom(wrapError{err: err})
+	if resp.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected invalid request error type, got %q", resp.Error.Type)
+	}
+	if resp.Error.Message != "bad request" {
+		t.Fatalf("expected wrapped error message, got %q", resp.Error.Message)
+	}
+}
+
 func ptr[T any](value T) *T {
 	return &value
+}
+
+type wrapError struct {
+	err error
+}
+
+func (e wrapError) Error() string {
+	return "wrapped: " + e.err.Error()
+}
+
+func (e wrapError) Unwrap() error {
+	return e.err
 }
