@@ -23,3 +23,21 @@ type ResponsesRequest struct {
 	ToolChoice        any       `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool     `json:"parallel_tool_calls,omitempty"`
 }
+
+type ContentItem struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type OutputItem struct {
+	Type    string        `json:"type"`
+	Role    string        `json:"role,omitempty"`
+	Content []ContentItem `json:"content,omitempty"`
+}
+
+type Response struct {
+	ID     string       `json:"id"`
+	Object string       `json:"object"`
+	Model  string       `json:"model"`
+	Output []OutputItem `json:"output"`
+}
