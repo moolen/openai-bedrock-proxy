@@ -26,3 +26,35 @@ func TestInMemoryStoreLookupMissReturnsFalse(t *testing.T) {
 		t.Fatalf("expected lookup miss to return false")
 	}
 }
+
+func TestInMemoryStoreDoesNotExposeMutableSnapshot(t *testing.T) {
+	store := NewInMemoryStore(1)
+
+	original := Record{
+		ResponseID: "r1",
+		ModelID:    "model",
+		Messages: []Message{
+			{Role: "user", Text: "hi"},
+		},
+	}
+
+	store.Save(original)
+	original.Messages[0].Text = "mutated"
+
+	stored, ok := store.Get("r1")
+	if !ok {
+		t.Fatalf("expected record to be stored")
+	}
+	if stored.Messages[0].Text != "hi" {
+		t.Fatalf("expected stored record to be immutable after Save")
+	}
+
+	stored.Messages[0].Text = "changed"
+	roundTrip, ok := store.Get("r1")
+	if !ok {
+		t.Fatalf("expected record to remain stored")
+	}
+	if roundTrip.Messages[0].Text != "hi" {
+		t.Fatalf("expected Get to return a copy of stored messages")
+	}
+}

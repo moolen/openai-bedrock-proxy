@@ -27,6 +27,10 @@ func (store *InMemoryStore) Get(responseID string) (Record, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record, ok := store.records[responseID]
+	if !ok {
+		return Record{}, false
+	}
+	record.Messages = cloneMessages(record.Messages)
 	return record, ok
 }
 
@@ -38,6 +42,7 @@ func (store *InMemoryStore) Save(record Record) {
 	defer store.mu.Unlock()
 
 	if _, ok := store.records[record.ResponseID]; ok {
+		record.Messages = cloneMessages(record.Messages)
 		store.records[record.ResponseID] = record
 		return
 	}
@@ -48,6 +53,7 @@ func (store *InMemoryStore) Save(record Record) {
 		delete(store.records, oldest)
 	}
 
+	record.Messages = cloneMessages(record.Messages)
 	store.records[record.ResponseID] = record
 	store.order = append(store.order, record.ResponseID)
 }
@@ -59,4 +65,13 @@ func RecordFromResponse(responseID, modelID string, snapshot Request) Record {
 		Messages:   append([]Message(nil), snapshot.Messages...),
 		CreatedAt:  time.Now().UTC(),
 	}
+}
+
+func cloneMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	clone := make([]Message, len(messages))
+	copy(clone, messages)
+	return clone
 }

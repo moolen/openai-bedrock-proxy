@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
@@ -131,5 +132,59 @@ func TestAppendAssistantReplyAppendsToMessages(t *testing.T) {
 	}
 	if len(updated.System) != 1 || updated.System[0] != "sys" {
 		t.Fatalf("unexpected system after append: %#v", updated.System)
+	}
+}
+
+func TestNormalizeRequestRejectsMalformedInputs(t *testing.T) {
+	cases := []struct {
+		name  string
+		input any
+	}{
+		{
+			name:  "missing role",
+			input: map[string]any{"content": "hi"},
+		},
+		{
+			name:  "wrong role type",
+			input: map[string]any{"role": 7, "content": "hi"},
+		},
+		{
+			name:  "wrong content type",
+			input: map[string]any{"role": "user", "content": 7},
+		},
+		{
+			name:  "non-object item",
+			input: []any{"oops"},
+		},
+		{
+			name: "wrong block type",
+			input: map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "output_text", "text": "hi"},
+			}},
+		},
+		{
+			name: "missing text",
+			input: map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "input_text"},
+			}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := openai.ResponsesRequest{
+				Model: "model",
+				Input: tc.input,
+			}
+
+			_, err := NormalizeRequest(req)
+			if err == nil {
+				t.Fatalf("expected error for malformed input")
+			}
+			var invalid openai.InvalidRequestError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("expected invalid request error, got %T", err)
+			}
+		})
 	}
 }
