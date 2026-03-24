@@ -188,7 +188,8 @@ func TestResponsesHandlerReturnsBadRequestForUnknownPreviousResponseID(t *testin
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","previous_response_id":"resp_missing"}`))
 
 	store := conversation.NewInMemoryStore(10)
-	svc := proxy.NewService(&fakeBedrockProxy{}, store)
+	bedrockProxy := &fakeBedrockProxy{}
+	svc := proxy.NewService(bedrockProxy, store)
 	NewServer(svc).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
@@ -200,6 +201,9 @@ func TestResponsesHandlerReturnsBadRequestForUnknownPreviousResponseID(t *testin
 	}
 	if body.Error.Message != "unknown previous_response_id" {
 		t.Fatalf("expected canonical message, got %q", body.Error.Message)
+	}
+	if bedrockProxy.respondCalls != 0 {
+		t.Fatalf("expected bedrock not to be called, got %d", bedrockProxy.respondCalls)
 	}
 }
 
