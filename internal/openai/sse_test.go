@@ -2,19 +2,40 @@ package openai
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 )
 
 func TestWriteEventFormatsSSEFrame(t *testing.T) {
-	var buf bytes.Buffer
-	if err := WriteEvent(&buf, "response.output_text.delta", map[string]any{"delta": "hi"}); err != nil {
+	writer := &fakeFlushWriter{}
+	if err := WriteEvent(writer, "response.output_text.delta", map[string]any{"delta": "hi"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "event: response.output_text.delta\n") {
-		t.Fatalf("unexpected SSE payload: %q", buf.String())
+	want := "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n"
+	if writer.String() != want {
+		t.Fatalf("unexpected SSE payload: %q", writer.String())
 	}
-	if !strings.Contains(buf.String(), "data: {\"delta\":\"hi\"}\n\n") {
-		t.Fatalf("unexpected SSE payload: %q", buf.String())
+	if !writer.flushed {
+		t.Fatal("expected writer to be flushed")
 	}
+	if writer.flushCount != 1 {
+		t.Fatalf("expected one flush call, got %d", writer.flushCount)
+	}
+	if writer.flushedBeforeWrite {
+		t.Fatal("expected write to happen before flush")
+	}
+}
+
+type fakeFlushWriter struct {
+	bytes.Buffer
+	flushed           bool
+	flushedBeforeWrite bool
+	flushCount        int
+}
+
+func (w *fakeFlushWriter) Flush() {
+	if w.Len() == 0 {
+		w.flushedBeforeWrite = true
+	}
+	w.flushed = true
+	w.flushCount++
 }

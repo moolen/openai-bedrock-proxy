@@ -6,6 +6,11 @@ import (
 	"io"
 )
 
+type flushWriter interface {
+	io.Writer
+	Flush()
+}
+
 func WriteEvent(w io.Writer, name string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -13,5 +18,13 @@ func WriteEvent(w io.Writer, name string, payload any) error {
 	}
 
 	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if flusher, ok := w.(flushWriter); ok {
+		flusher.Flush()
+	}
+
+	return nil
 }
