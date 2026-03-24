@@ -10,6 +10,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.ListenPort != "8080" {
 		t.Fatalf("expected default listen port, got %q", cfg.ListenPort)
 	}
+	if cfg.AWSRegion != "" {
+		t.Fatalf("expected default aws region to be empty, got %q", cfg.AWSRegion)
+	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("expected default log level, got %q", cfg.LogLevel)
+	}
 }
 
 func TestLoadConfigOverrides(t *testing.T) {
@@ -20,7 +26,16 @@ func TestLoadConfigOverrides(t *testing.T) {
 		"LOG_LEVEL":   "debug",
 	}
 	cfg := LoadFromEnv(func(key string) string { return env[key] })
+	if cfg.ListenAddr != "127.0.0.1" {
+		t.Fatalf("expected override listen addr, got %q", cfg.ListenAddr)
+	}
 	if cfg.ListenPort != "9000" {
 		t.Fatalf("expected override port, got %q", cfg.ListenPort)
+	}
+	if cfg.AWSRegion != "us-east-1" {
+		t.Fatalf("expected override aws region, got %q", cfg.AWSRegion)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected override log level, got %q", cfg.LogLevel)
 	}
 }
