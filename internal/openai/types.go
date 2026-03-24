@@ -13,16 +13,16 @@ type Tool struct {
 }
 
 type ResponsesRequest struct {
-	Model              string    `json:"model"`
-	Input              any       `json:"input"`
-	PreviousResponseID string    `json:"previous_response_id,omitempty"`
-	Instructions       string    `json:"instructions,omitempty"`
-	Stream             bool      `json:"stream,omitempty"`
-	MaxOutputTokens    *int      `json:"max_output_tokens,omitempty"`
-	Temperature        *float64  `json:"temperature,omitempty"`
-	Tools              []Tool    `json:"tools,omitempty"`
-	ToolChoice         any       `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool     `json:"parallel_tool_calls,omitempty"`
+	Model              string   `json:"model"`
+	Input              any      `json:"input"`
+	PreviousResponseID string   `json:"previous_response_id,omitempty"`
+	Instructions       string   `json:"instructions,omitempty"`
+	Stream             bool     `json:"stream,omitempty"`
+	MaxOutputTokens    *int     `json:"max_output_tokens,omitempty"`
+	Temperature        *float64 `json:"temperature,omitempty"`
+	Tools              []Tool   `json:"tools,omitempty"`
+	ToolChoice         any      `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool    `json:"parallel_tool_calls,omitempty"`
 }
 
 type ContentItem struct {

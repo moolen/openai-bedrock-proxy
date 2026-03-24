@@ -2,6 +2,8 @@ package openai
 
 import "testing"
 
+const invalidResponsesInputMessage = "input must be a non-empty string or supported message object/array"
+
 func TestValidateResponsesRequestAcceptsSimpleTextInput(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -98,9 +100,7 @@ func TestValidateResponsesRequestRejectsUnsupportedContentBlock(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected unsupported content block validation error")
-	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), invalidResponsesInputMessage)
 }
 
 func TestValidateResponsesRequestRejectsNonMessageItem(t *testing.T) {
@@ -114,9 +114,7 @@ func TestValidateResponsesRequestRejectsNonMessageItem(t *testing.T) {
 			"not-a-message",
 		},
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected non-message item validation error")
-	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), invalidResponsesInputMessage)
 }
 
 func TestValidateResponsesRequestRejectsAssistantInputTextBlocks(t *testing.T) {
@@ -129,9 +127,7 @@ func TestValidateResponsesRequestRejectsAssistantInputTextBlocks(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected assistant input_text block validation error")
-	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), invalidResponsesInputMessage)
 }
 
 func TestValidateResponsesRequestRejectsUserOutputTextBlocks(t *testing.T) {
@@ -144,9 +140,31 @@ func TestValidateResponsesRequestRejectsUserOutputTextBlocks(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected user output_text block validation error")
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), invalidResponsesInputMessage)
+}
+
+func TestValidateResponsesRequestRejectsEmptyEasyMessageContent(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role":    "user",
+			"content": "",
+		},
 	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), invalidResponsesInputMessage)
+}
+
+func TestValidateResponsesRequestRejectsEmptyTextBlockContent(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "assistant",
+			"content": []map[string]any{
+				{"type": "output_text", "text": ""},
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), invalidResponsesInputMessage)
 }
 
 func TestValidateResponsesRequestRejectsMissingModel(t *testing.T) {
@@ -214,6 +232,16 @@ func TestErrorResponseFromClassifiesWrappedInvalidRequestErrors(t *testing.T) {
 	}
 	if resp.Error.Message != "bad request" {
 		t.Fatalf("expected wrapped error message, got %q", resp.Error.Message)
+	}
+}
+
+func assertInvalidRequestMessage(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if err.Error() != want {
+		t.Fatalf("expected error %q, got %q", want, err.Error())
 	}
 }
 

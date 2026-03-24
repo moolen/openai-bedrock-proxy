@@ -1,5 +1,7 @@
 package openai
 
+const invalidResponsesInputErrorMessage = "input must be a non-empty string or supported message object/array"
+
 func ValidateResponsesRequest(req ResponsesRequest) error {
 	if req.Model == "" {
 		return NewInvalidRequestError("model is required")
@@ -8,7 +10,7 @@ func ValidateResponsesRequest(req ResponsesRequest) error {
 		return NewInvalidRequestError("input is required")
 	}
 	if !isSupportedInput(req.Input) {
-		return NewInvalidRequestError("structured input is not supported")
+		return NewInvalidRequestError(invalidResponsesInputErrorMessage)
 	}
 	if len(req.Tools) > 0 {
 		return NewInvalidRequestError("tools are not supported")
@@ -126,7 +128,7 @@ func isValidMessage(message map[string]any) bool {
 
 	switch content := contentValue.(type) {
 	case string:
-		return true
+		return content != ""
 	case []map[string]any:
 		return isValidTextBlocks(allowedBlockType, content)
 	case []any:
@@ -177,8 +179,8 @@ func isValidTextBlock(allowedBlockType string, block map[string]any) bool {
 	if !ok {
 		return false
 	}
-	_, ok = textValue.(string)
-	return ok
+	text, ok := textValue.(string)
+	return ok && text != ""
 }
 
 var allowedBlockTypesByRole = map[string]string{
