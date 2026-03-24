@@ -16,3 +16,6 @@ bin/
 
 # Editor and OS files
 .DS_Store
+
+# Local worktrees
+.worktrees/
