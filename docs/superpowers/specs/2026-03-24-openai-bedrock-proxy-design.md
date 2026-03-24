@@ -85,7 +85,7 @@ Supported request concepts in the current baseline:
 Supported request concepts in compatibility slice 1:
 
 - Text input supplied either as a raw string or as structured message items
-- Conversation history that can be represented as `user`, `assistant`, and `system` text messages
+- Conversation history that can be represented as `user`, `assistant`, `system`, and `developer` text messages
 - `previous_response_id` continuation using proxy-managed in-memory state
 - Streaming mode
 - Basic inference controls such as token limits and temperature when available
@@ -106,10 +106,62 @@ Compatibility slice 1 expands request handling from plain string input to the su
 Accepted forms:
 
 - `input` as a plain string
-- `input` as a single `message` item
-- `input` as an array of `message` items
-- message `role` values of `user`, `assistant`, or `system`
-- text-only content blocks
+- `input` as a single message object
+- `input` as an array of message objects
+- message objects in either "easy message" form such as `{ "role": "user", "content": "hello" }` or explicit item form such as `{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hello" }] }`
+- message `role` values of `user`, `assistant`, `system`, or `developer`
+- content supplied either as a raw string or as an array of text blocks
+- accepted text block types:
+  - `input_text` for `user`, `system`, and `developer`
+  - `output_text` for `assistant`
+  - raw string content for any accepted role
+
+Normalization rules:
+
+- `developer` is normalized as Bedrock system context, the same as `system`
+- `input_text` and `output_text` blocks are flattened to plain text in encounter order
+- mixed text blocks are concatenated with no synthetic separators
+- any non-text block type is rejected in slice 1
+
+Concrete accepted examples:
+
+```json
+{
+  "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "input": "Find the bug in parseConfig()"
+}
+```
+
+```json
+{
+  "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "input": {
+    "type": "message",
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": "Find the bug in parseConfig()" }
+    ]
+  }
+}
+```
+
+```json
+{
+  "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "previous_response_id": "resp_123",
+  "instructions": "Be concise.",
+  "input": [
+    { "role": "assistant", "content": "The parser fails on empty sections." },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "Patch it without changing behavior." }
+      ]
+    }
+  ]
+}
+```
 
 Rejected in slice 1:
 
@@ -120,9 +172,21 @@ Rejected in slice 1:
 - `tool_choice`
 - `parallel_tool_calls`
 
-`previous_response_id` should be implemented with an internal response store. When present, the proxy loads the stored normalized conversation snapshot for the referenced response, appends only the new request input, applies the current request's `instructions`, and sends the merged result to Bedrock.
+`previous_response_id` should be implemented with an internal response store. When present, the proxy loads the stored normalized conversation snapshot for the referenced response, appends only the new request input, rebuilds the current turn's system context from the new request, and sends the merged result to Bedrock.
 
 If `previous_response_id` is unknown, the proxy should return `400` instead of silently dropping history.
+
+#### System Context Precedence
+
+System context should be deterministic and turn-local.
+
+Rules:
+
+- Only `user` and `assistant` conversation turns are persisted for `previous_response_id` continuation
+- `system`, `developer`, and `instructions` values are not inherited from the previously stored response
+- For a new request, normalized `system` and `developer` messages from the incoming `input` are collected in encounter order
+- If `instructions` is present, it is appended after those messages as the final system block, giving it highest precedence in the current turn
+- The Bedrock request's `System` field is built only from the current request's `system`, `developer`, and `instructions` inputs
 
 ### Streaming
 
@@ -131,9 +195,11 @@ For streaming requests, the proxy should emit SSE events compatible with OpenAI 
 The proxy should:
 
 - Flush partial text as it arrives from Bedrock stream events
-- Preserve tool-call deltas where Bedrock emits structured tool usage data
+- Emit only text-oriented events in the current baseline and slice 1
 - Terminate the stream cleanly with completion events
 - Surface stream-time translation failures as structured error events where possible, and otherwise terminate the stream
+
+Tool-shaped streaming events remain deferred to slice 2 and richer event fidelity remains deferred to slice 3.
 
 ### `GET /v1/models`
 
@@ -160,7 +226,7 @@ Rules for the current implementation:
 Translation responsibilities after compatibility slice 1:
 
 - Normalize raw string input and structured `message` items into a single internal conversation model
-- Extract `system` messages from structured input and merge them with turn-local `instructions`
+- Extract `system` and `developer` messages from structured input and merge them with turn-local `instructions`
 - Convert `user` and `assistant` turns into Bedrock message content blocks
 - Load and append prior normalized conversation state from `previous_response_id`
 - Map Bedrock stop reasons into OpenAI completion / response status fields
@@ -178,8 +244,7 @@ Each stored record should include:
 
 - response ID
 - requested model ID
-- normalized conversation snapshot after the assistant reply
-- active system instructions for the next continuation
+- normalized conversation snapshot after the assistant reply, containing only persisted `user` and `assistant` turns
 - creation timestamp
 
 Persistence rules:
@@ -187,8 +252,28 @@ Persistence rules:
 - Store the snapshot only after a successful non-streaming response
 - Store the snapshot only after a streaming response has produced a coherent assistant result and completed cleanly
 - Do not store partial or failed turns
+- Keep the store bounded with a fixed-capacity FIFO policy in slice 1
+- Use a default maximum of 4096 stored responses and evict the oldest entry on overflow
 
 This store is intentionally best-effort for now. A process restart loses state, and subsequent `previous_response_id` lookups should fail explicitly with `400`.
+
+## Validation Policy
+
+Slice 1 should use a strict supported-subset policy with predictable wire behavior:
+
+- Explicitly reject known unsupported fields or item types that would materially change behavior
+- Accept and translate only the documented slice-1 request subset in this spec
+- Ignore unknown top-level JSON fields that are not used by translation, matching Go's normal JSON decoding behavior
+- Reject unknown structured `input` item shapes and unknown content block types with `400`
+
+Explicit reject list for slice 1:
+
+- `tools`
+- `tool_choice`
+- `parallel_tool_calls`
+- non-message input items
+- non-text content blocks
+- multimodal inputs
 
 ## Configuration
 
@@ -235,6 +320,9 @@ Priority test layers:
    - OpenAI request to Bedrock request mapping
    - Bedrock response to OpenAI response mapping
    - Structured message normalization
+   - Easy-message and explicit-item input forms
+   - `developer` and `system` normalization into Bedrock system context
+   - `instructions` precedence over incoming system context
    - `previous_response_id` snapshot append semantics
    - Stop-reason conversion
 
@@ -244,6 +332,7 @@ Priority test layers:
    - Streaming SSE path
    - Unknown `previous_response_id`
    - `/v1/models` response shape
+   - Overflow eviction behavior for the in-memory response store
 
 3. End-to-end style tests with a mocked Bedrock interface
    - Codex-relevant request payloads
@@ -271,5 +360,4 @@ The following are intentionally deferred until after the Responses-first milesto
 The current design intentionally leaves these implementation details flexible until coding begins:
 
 - Whether `/v1/models` needs static placeholders or dynamic behavior for the target client
-- The exact in-memory retention policy and cleanup strategy for stored responses
 - How much of the OpenAI Responses event taxonomy should be reproduced verbatim versus approximated cleanly for Codex compatibility in slice 3
