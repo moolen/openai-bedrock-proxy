@@ -2,10 +2,13 @@ package bedrock
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -65,7 +68,7 @@ func (c *Client) Respond(ctx context.Context, req openai.ResponsesRequest) (open
 	}
 
 	return TranslateResponse(ConverseResponse{
-		ResponseID: "",
+		ResponseID: responseIDFromMetadata(resp),
 		Text:       extractText(resp),
 	}, req.Model), nil
 }
@@ -180,4 +183,21 @@ func extractText(resp *bedrockruntime.ConverseOutput) string {
 		}
 	}
 	return text
+}
+
+func responseIDFromMetadata(resp *bedrockruntime.ConverseOutput) string {
+	if resp != nil {
+		if requestID, ok := awsmiddleware.GetRequestIDMetadata(resp.ResultMetadata); ok && requestID != "" {
+			return requestID
+		}
+	}
+	return fallbackResponseID()
+}
+
+func fallbackResponseID() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "local"
+	}
+	return fmt.Sprintf("%x", buf[:])
 }

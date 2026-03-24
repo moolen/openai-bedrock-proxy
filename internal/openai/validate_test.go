@@ -47,6 +47,38 @@ func TestValidateResponsesRequestRejectsUnsupportedFields(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestRejectsStructuredInput(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: []map[string]any{{"type": "input_text", "text": "hi"}},
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected structured-input validation error")
+	}
+}
+
+func TestValidateResponsesRequestRejectsTools(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{{Type: "function", Function: ToolFunction{Name: "lookup"}}},
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected tools validation error")
+	}
+}
+
+func TestValidateResponsesRequestRejectsToolChoice(t *testing.T) {
+	req := ResponsesRequest{
+		Model:      "model",
+		Input:      "hi",
+		ToolChoice: "auto",
+	}
+	if err := ValidateResponsesRequest(req); err == nil {
+		t.Fatal("expected tool_choice validation error")
+	}
+}
+
 func TestErrorResponseFromClassifiesWrappedInvalidRequestErrors(t *testing.T) {
 	err := NewInvalidRequestError("bad request")
 	resp := ErrorResponseFrom(wrapError{err: err})

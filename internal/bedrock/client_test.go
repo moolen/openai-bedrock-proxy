@@ -126,6 +126,9 @@ func TestClientRespondTranslatesRequestAndParsesText(t *testing.T) {
 	if resp.Object != "response" {
 		t.Fatalf("expected response object, got %q", resp.Object)
 	}
+	if resp.ID == "resp_" || resp.ID == "" {
+		t.Fatalf("expected non-empty response id, got %q", resp.ID)
+	}
 	if len(resp.Output) != 1 || resp.Output[0].Content[0].Text != "hello back" {
 		t.Fatalf("expected translated text output, got %+v", resp.Output)
 	}

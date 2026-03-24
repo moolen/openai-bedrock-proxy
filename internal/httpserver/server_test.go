@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/smithy-go"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
@@ -102,6 +103,26 @@ func (s *fakeService) Stream(_ context.Context, req openai.ResponsesRequest, w h
 	return s.streamErr
 }
 
+type fakeAPIError struct {
+	message string
+}
+
+func (e fakeAPIError) Error() string {
+	return e.message
+}
+
+func (e fakeAPIError) ErrorCode() string {
+	return "UpstreamError"
+}
+
+func (e fakeAPIError) ErrorFault() smithy.ErrorFault {
+	return smithy.FaultServer
+}
+
+func (e fakeAPIError) ErrorMessage() string {
+	return e.message
+}
+
 func TestResponsesHandlerReturnsNotImplementedForStreamingWhenServiceDoesNotSupportIt(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi","stream":true}`))
@@ -145,5 +166,16 @@ func TestResponsesHandlerStreamsWhenServiceSupportsIt(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "event: response.completed") {
 		t.Fatalf("expected streamed body, got %q", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerReturnsBadGatewayForUpstreamErrors(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi"}`))
+
+	NewServer(&fakeService{err: fakeAPIError{message: "bedrock failed"}}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
 	}
 }

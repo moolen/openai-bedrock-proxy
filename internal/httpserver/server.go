@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/aws/smithy-go"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
@@ -88,6 +89,10 @@ func statusCodeFor(err error) int {
 	if errors.As(err, &invalidRequest) {
 		return http.StatusBadRequest
 	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return http.StatusBadGateway
+	}
 	return http.StatusInternalServerError
 }
 
@@ -104,4 +109,10 @@ func (w *trackingResponseWriter) WriteHeader(statusCode int) {
 func (w *trackingResponseWriter) Write(p []byte) (int, error) {
 	w.started = true
 	return w.ResponseWriter.Write(p)
+}
+
+func (w *trackingResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
