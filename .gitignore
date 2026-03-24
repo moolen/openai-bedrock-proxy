@@ -1,0 +1,17 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output and coverage
+*.out
+coverage.out
+bin/
+
+# Editor and OS files
+.DS_Store
