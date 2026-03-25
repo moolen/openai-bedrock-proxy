@@ -62,7 +62,7 @@ func RecordFromResponse(responseID, modelID string, snapshot Request) Record {
 	return Record{
 		ResponseID: responseID,
 		ModelID:    modelID,
-		Messages:   append([]Message(nil), snapshot.Messages...),
+		Messages:   cloneMessages(snapshot.Messages),
 		CreatedAt:  time.Now().UTC(),
 	}
 }
@@ -72,6 +72,11 @@ func cloneMessages(messages []Message) []Message {
 		return nil
 	}
 	clone := make([]Message, len(messages))
-	copy(clone, messages)
+	for idx, message := range messages {
+		clone[idx] = Message{
+			Role:   message.Role,
+			Blocks: cloneBlocks(message.Blocks),
+		}
+	}
 	return clone
 }

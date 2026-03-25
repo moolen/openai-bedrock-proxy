@@ -44,9 +44,7 @@ type ToolChoice struct {
 }
 
 type Message struct {
-	Role string
-	// Text is a legacy mirror of concatenated text blocks kept for package-local compatibility.
-	Text   string
+	Role   string
 	Blocks []Block
 }
 

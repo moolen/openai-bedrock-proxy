@@ -49,7 +49,6 @@ func AppendAssistantReply(req Request, assistantBlocks []Block) Request {
 	}
 	updated.Messages = append(updated.Messages, Message{
 		Role:   "assistant",
-		Text:   messageTextFromBlocks(assistantBlocks),
 		Blocks: cloneBlocks(assistantBlocks),
 	})
 	return updated
@@ -66,7 +65,7 @@ func normalizeInput(input any) ([]string, []Message, error) {
 			return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
 		}
 		blocks := []Block{{Type: BlockTypeText, Text: value}}
-		return nil, []Message{{Role: "user", Text: value, Blocks: blocks}}, nil
+		return nil, []Message{{Role: "user", Blocks: blocks}}, nil
 	case map[string]any:
 		return normalizeMessage(value)
 	case []map[string]any:
@@ -142,16 +141,15 @@ func normalizeMessage(message map[string]any) ([]string, []Message, error) {
 		return nil, nil, err
 	}
 
-	text := messageTextFromBlocks(blocks)
-
 	switch role {
 	case "system", "developer":
+		text := systemTextFromBlocks(blocks)
 		if text == "" {
 			return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
 		}
 		return []string{text}, nil, nil
 	case "user", "assistant":
-		return nil, []Message{{Role: role, Text: text, Blocks: blocks}}, nil
+		return nil, []Message{{Role: role, Blocks: blocks}}, nil
 	default:
 		return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
 	}
@@ -376,7 +374,7 @@ func syntheticBuiltInToolName(toolType string) string {
 	return "__builtin_" + toolType
 }
 
-func messageTextFromBlocks(blocks []Block) string {
+func systemTextFromBlocks(blocks []Block) string {
 	var builder strings.Builder
 	for _, block := range blocks {
 		if block.Type == BlockTypeText {
