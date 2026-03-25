@@ -12,6 +12,7 @@ import (
 type BedrockConversation interface {
 	RespondConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (bedrock.ConverseResponse, error)
 	StreamConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64, w http.ResponseWriter) (bedrock.ConverseResponse, error)
+	ListModels(context.Context) ([]bedrock.ModelSummary, error)
 }
 
 type Service struct {
@@ -63,6 +64,32 @@ func (s *Service) Stream(ctx context.Context, req openai.ResponsesRequest, w htt
 	snapshot := conversation.AppendAssistantReply(merged, resp.Text)
 	s.store.Save(conversation.RecordFromResponse(openAIResponseID(resp.ResponseID), req.Model, snapshot))
 	return nil
+}
+
+func (s *Service) ListModels(ctx context.Context) (openai.ModelsList, error) {
+	models, err := s.client.ListModels(ctx)
+	if err != nil {
+		return openai.ModelsList{}, err
+	}
+
+	data := make([]openai.Model, 0, len(models))
+	for _, model := range models {
+		owner := model.Provider
+		if owner == "" {
+			owner = "bedrock"
+		}
+		data = append(data, openai.Model{
+			ID:      model.ID,
+			Object:  "model",
+			OwnedBy: owner,
+			Name:    model.Name,
+		})
+	}
+
+	return openai.ModelsList{
+		Object: "list",
+		Data:   data,
+	}, nil
 }
 
 func (s *Service) loadPrevious(previousResponseID string) (conversation.Request, error) {

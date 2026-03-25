@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/config"
+	bedrockcatalog "github.com/aws/aws-sdk-go-v2/service/bedrock"
+	bedrockcatalogtypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
@@ -21,11 +23,22 @@ type RuntimeAPI interface {
 	ConverseStream(context.Context, *bedrockruntime.ConverseStreamInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseStreamOutput, error)
 }
 
+type CatalogAPI interface {
+	ListFoundationModels(context.Context, *bedrockcatalog.ListFoundationModelsInput, ...func(*bedrockcatalog.Options)) (*bedrockcatalog.ListFoundationModelsOutput, error)
+}
+
 type LoadConfigFunc func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error)
 
 type Client struct {
 	runtime       RuntimeAPI
+	catalog       CatalogAPI
 	streamAdapter streamAdapterFunc
+}
+
+type ModelSummary struct {
+	ID       string
+	Name     string
+	Provider string
 }
 
 type streamEvents interface {
@@ -53,6 +66,7 @@ func NewClient(ctx context.Context, region string, loadConfig LoadConfigFunc) (*
 
 	return &Client{
 		runtime: bedrockruntime.NewFromConfig(awsCfg),
+		catalog: bedrockcatalog.NewFromConfig(awsCfg),
 	}, nil
 }
 
@@ -62,6 +76,33 @@ func (c *Client) Converse(ctx context.Context, input *bedrockruntime.ConverseInp
 
 func (c *Client) ConverseStream(ctx context.Context, input *bedrockruntime.ConverseStreamInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseStreamOutput, error) {
 	return c.runtime.ConverseStream(ctx, input, optFns...)
+}
+
+func (c *Client) ListModels(ctx context.Context) ([]ModelSummary, error) {
+	if c.catalog == nil {
+		return nil, errors.New("bedrock catalog client is not configured")
+	}
+
+	resp, err := c.catalog.ListFoundationModels(ctx, &bedrockcatalog.ListFoundationModelsInput{
+		ByOutputModality: bedrockcatalogtypes.ModelModalityText,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	models := make([]ModelSummary, 0, len(resp.ModelSummaries))
+	for _, model := range resp.ModelSummaries {
+		modelID := aws.ToString(model.ModelId)
+		if modelID == "" {
+			continue
+		}
+		models = append(models, ModelSummary{
+			ID:       modelID,
+			Name:     aws.ToString(model.ModelName),
+			Provider: aws.ToString(model.ProviderName),
+		})
+	}
+	return models, nil
 }
 
 func (c *Client) RespondConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (ConverseResponse, error) {

@@ -42,3 +42,15 @@ type Response struct {
 	Model  string       `json:"model"`
 	Output []OutputItem `json:"output"`
 }
+
+type Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+	Name    string `json:"name,omitempty"`
+}
+
+type ModelsList struct {
+	Object string  `json:"object"`
+	Data   []Model `json:"data"`
+}
