@@ -104,6 +104,19 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelSummary, error) {
 	return out, nil
 }
 
+func (c *Client) LookupModel(ctx context.Context, id string) (ModelRecord, error) {
+	catalog, err := c.Catalog(ctx)
+	if err != nil {
+		return ModelRecord{}, err
+	}
+
+	record, ok := catalog.Resolve(id)
+	if !ok {
+		return ModelRecord{}, openai.NewInvalidRequestError("model is not available in Bedrock catalog")
+	}
+	return record, nil
+}
+
 func (c *Client) Catalog(ctx context.Context) (Catalog, error) {
 	if c.catalog == nil {
 		return Catalog{}, errors.New("bedrock catalog client is not configured")
@@ -143,9 +156,38 @@ func (c *Client) RespondConversation(ctx context.Context, modelID string, req co
 	result := ConverseResponse{
 		ResponseID: responseIDFromMetadata(resp),
 		Output:     extractOutput(resp),
+		StopReason: string(resp.StopReason),
 	}
 	logger.Info("bedrock converse completed", "response_id", result.ResponseID)
 	logger.Debug("bedrock converse response output",
+		"response_id", result.ResponseID,
+		"output", result.Output,
+	)
+	return result, nil
+}
+
+func (c *Client) Chat(ctx context.Context, req ConverseRequest) (ConverseResponse, error) {
+	logger := bedrockLogger(ctx).With("model_id", req.ModelID)
+	logger.Debug("executing bedrock chat converse request",
+		"system", req.System,
+		"messages", req.Messages,
+		"max_tokens", req.MaxTokens,
+		"temperature", req.Temperature,
+	)
+
+	resp, err := c.runtime.Converse(ctx, toConverseInput(req))
+	if err != nil {
+		logger.Error("bedrock chat converse failed", "error", err)
+		return ConverseResponse{}, err
+	}
+
+	result := ConverseResponse{
+		ResponseID: responseIDFromMetadata(resp),
+		Output:     extractOutput(resp),
+		StopReason: string(resp.StopReason),
+	}
+	logger.Info("bedrock chat converse completed", "response_id", result.ResponseID, "stop_reason", result.StopReason)
+	logger.Debug("bedrock chat converse response output",
 		"response_id", result.ResponseID,
 		"output", result.Output,
 	)
@@ -402,9 +444,27 @@ func extractOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {
 					Arguments: mustMarshalToolUseInput(typed.Value.Input),
 				},
 			})
+		case *bedrocktypes.ContentBlockMemberReasoningContent:
+			reasoningOutput, ok := reasoningText(typed.Value)
+			if !ok || reasoningOutput == "" {
+				continue
+			}
+			blocks = append(blocks, OutputBlock{
+				Type: OutputBlockTypeReasoning,
+				Text: reasoningOutput,
+			})
 		}
 	}
 	return blocks
+}
+
+func reasoningText(block bedrocktypes.ReasoningContentBlock) (string, bool) {
+	switch typed := block.(type) {
+	case *bedrocktypes.ReasoningContentBlockMemberReasoningText:
+		return aws.ToString(typed.Value.Text), true
+	default:
+		return "", false
+	}
 }
 
 func responseIDFromMetadata(resp *bedrockruntime.ConverseOutput) string {

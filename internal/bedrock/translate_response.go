@@ -10,6 +10,7 @@ import (
 const (
 	OutputBlockTypeText     = "text"
 	OutputBlockTypeToolCall = "tool_call"
+	OutputBlockTypeReasoning = "reasoning"
 )
 
 type ToolCall struct {
@@ -64,6 +65,8 @@ func translateOutputItems(blocks []OutputBlock) []openai.OutputItem {
 				continue
 			}
 			items = append(items, translateToolCallItem(*block.ToolCall))
+		case OutputBlockTypeReasoning:
+			continue
 		default:
 			items = append(items, openai.OutputItem{
 				Type: "message",

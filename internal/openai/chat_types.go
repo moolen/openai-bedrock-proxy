@@ -138,20 +138,22 @@ func (c ChatMessageContent) IsZero() bool {
 }
 
 type ChatMessage struct {
-	Role       string             `json:"role"`
-	Content    ChatMessageContent `json:"content,omitempty"`
-	Name       string             `json:"name,omitempty"`
-	ToolCallID string             `json:"tool_call_id,omitempty"`
-	ToolCalls  []ChatToolCall     `json:"tool_calls,omitempty"`
+	Role             string             `json:"role"`
+	Content          ChatMessageContent `json:"content,omitempty"`
+	Name             string             `json:"name,omitempty"`
+	ToolCallID       string             `json:"tool_call_id,omitempty"`
+	ToolCalls        []ChatToolCall     `json:"tool_calls,omitempty"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
 }
 
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
 	type chatMessageJSON struct {
-		Role       string              `json:"role"`
-		Content    *ChatMessageContent `json:"content,omitempty"`
-		Name       string              `json:"name,omitempty"`
-		ToolCallID string              `json:"tool_call_id,omitempty"`
-		ToolCalls  []ChatToolCall      `json:"tool_calls,omitempty"`
+		Role             string              `json:"role"`
+		Content          *ChatMessageContent `json:"content,omitempty"`
+		Name             string              `json:"name,omitempty"`
+		ToolCallID       string              `json:"tool_call_id,omitempty"`
+		ToolCalls        []ChatToolCall      `json:"tool_calls,omitempty"`
+		ReasoningContent string              `json:"reasoning_content,omitempty"`
 	}
 
 	var content *ChatMessageContent
@@ -160,11 +162,12 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(chatMessageJSON{
-		Role:       m.Role,
-		Content:    content,
-		Name:       m.Name,
-		ToolCallID: m.ToolCallID,
-		ToolCalls:  m.ToolCalls,
+		Role:             m.Role,
+		Content:          content,
+		Name:             m.Name,
+		ToolCallID:       m.ToolCallID,
+		ToolCalls:        m.ToolCalls,
+		ReasoningContent: m.ReasoningContent,
 	})
 }
 

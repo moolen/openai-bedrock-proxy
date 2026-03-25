@@ -798,6 +798,117 @@ func TestClientListModelsUsesBedrockCatalog(t *testing.T) {
 	}
 }
 
+func TestClientLookupModelResolvesCatalogRecord(t *testing.T) {
+	client := &Client{catalog: &fakeCatalog{
+		output: &bedrocksvc.ListFoundationModelsOutput{
+			ModelSummaries: []bedrockcatalogtypes.FoundationModelSummary{
+				{
+					ModelId:      aws.String("anthropic.claude-3-7-sonnet-20250219-v1:0"),
+					ProviderName: aws.String("Anthropic"),
+					ModelName:    aws.String("Claude 3.7 Sonnet"),
+				},
+			},
+		},
+		systemProfilesOutput: &bedrocksvc.ListInferenceProfilesOutput{
+			InferenceProfileSummaries: []bedrockcatalogtypes.InferenceProfileSummary{
+				{
+					InferenceProfileId: aws.String("us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
+					Models: []bedrockcatalogtypes.InferenceProfileModel{
+						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0")},
+					},
+				},
+			},
+		},
+		applicationProfilesOutput: &bedrocksvc.ListInferenceProfilesOutput{},
+	}}
+
+	got, err := client.LookupModel(context.Background(), "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ID != "us.anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected profile id to resolve, got %#v", got)
+	}
+	if got.ResolvedFoundationModelID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected resolved foundation model id, got %#v", got)
+	}
+}
+
+func TestClientLookupModelRejectsUnknownModel(t *testing.T) {
+	client := &Client{catalog: &fakeCatalog{
+		output:                    &bedrocksvc.ListFoundationModelsOutput{},
+		systemProfilesOutput:      &bedrocksvc.ListInferenceProfilesOutput{},
+		applicationProfilesOutput: &bedrocksvc.ListInferenceProfilesOutput{},
+	}}
+
+	_, err := client.LookupModel(context.Background(), "missing-model")
+	if err == nil {
+		t.Fatal("expected unknown model error")
+	}
+	var invalidRequest openai.InvalidRequestError
+	if !errors.As(err, &invalidRequest) {
+		t.Fatalf("expected invalid request error, got %T", err)
+	}
+}
+
+func TestClientChatBuildsConverseInputAndParsesReasoningBlocks(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberReasoningContent{
+							Value: &bedrocktypes.ReasoningContentBlockMemberReasoningText{
+								Value: bedrocktypes.ReasoningTextBlock{
+									Text:      aws.String("draft reasoning"),
+									Signature: aws.String("sig"),
+								},
+							},
+						},
+						&bedrocktypes.ContentBlockMemberText{Value: "final answer"},
+					},
+				},
+			},
+			StopReason: bedrocktypes.StopReasonEndTurn,
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	resp, err := client.Chat(context.Background(), ConverseRequest{
+		ModelID: "model-id",
+		System:  []string{"be terse"},
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{Text: "hello"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastConverseInput == nil {
+		t.Fatal("expected converse input to be captured")
+	}
+	if got := aws.ToString(runtime.lastConverseInput.ModelId); got != "model-id" {
+		t.Fatalf("expected model id passthrough, got %q", got)
+	}
+	if len(resp.Output) != 2 {
+		t.Fatalf("expected reasoning and text output blocks, got %#v", resp.Output)
+	}
+	if resp.Output[0].Type != OutputBlockTypeReasoning || resp.Output[0].Text != "draft reasoning" {
+		t.Fatalf("expected reasoning output block, got %#v", resp.Output[0])
+	}
+	if resp.Output[1].Type != OutputBlockTypeText || resp.Output[1].Text != "final answer" {
+		t.Fatalf("expected text output block, got %#v", resp.Output[1])
+	}
+	if resp.StopReason != string(bedrocktypes.StopReasonEndTurn) {
+		t.Fatalf("expected stop reason to map, got %#v", resp)
+	}
+}
+
 type fakeRuntime struct {
 	lastConverseInput       *bedrockruntime.ConverseInput
 	converseOutput          *bedrockruntime.ConverseOutput
