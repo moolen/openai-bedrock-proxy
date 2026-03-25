@@ -13,7 +13,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.AWSRegion != "" {
 		t.Fatalf("expected default aws region to be empty, got %q", cfg.AWSRegion)
 	}
-	if cfg.LogLevel != "info" {
+	if cfg.LogLevel != "debug" {
 		t.Fatalf("expected default log level, got %q", cfg.LogLevel)
 	}
 }

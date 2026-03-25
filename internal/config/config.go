@@ -12,7 +12,7 @@ func LoadFromEnv(getenv func(string) string) Config {
 		ListenAddr: firstNonEmpty(getenv("LISTEN_ADDR"), "0.0.0.0"),
 		ListenPort: firstNonEmpty(getenv("LISTEN_PORT"), "8080"),
 		AWSRegion:  getenv("AWS_REGION"),
-		LogLevel:   firstNonEmpty(getenv("LOG_LEVEL"), "info"),
+		LogLevel:   firstNonEmpty(getenv("LOG_LEVEL"), "debug"),
 	}
 }
 
