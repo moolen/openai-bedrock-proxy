@@ -415,6 +415,48 @@ func TestClientRespondConversationParsesMixedTextAndToolUseOutput(t *testing.T) 
 	}
 }
 
+func TestClientRespondConversationIgnoresReasoningBlocks(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberReasoningContent{
+							Value: &bedrocktypes.ReasoningContentBlockMemberReasoningText{
+								Value: bedrocktypes.ReasoningTextBlock{
+									Text:      aws.String("private reasoning"),
+									Signature: aws.String("sig"),
+								},
+							},
+						},
+						&bedrocktypes.ContentBlockMemberText{Value: "visible answer"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	resp, err := client.RespondConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{{
+			Role: "user",
+			Blocks: []conversation.Block{
+				{Type: conversation.BlockTypeText, Text: "hello"},
+			},
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(resp.Output) != 1 {
+		t.Fatalf("expected only visible assistant output, got %#v", resp.Output)
+	}
+	if resp.Output[0].Type != OutputBlockTypeText || resp.Output[0].Text != "visible answer" {
+		t.Fatalf("expected visible text output only, got %#v", resp.Output[0])
+	}
+}
+
 func TestClientRespondConversationPreservesEmptyStringToolResultAsText(t *testing.T) {
 	runtime := &fakeRuntime{
 		converseOutput: &bedrockruntime.ConverseOutput{

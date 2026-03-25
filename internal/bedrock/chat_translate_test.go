@@ -116,6 +116,27 @@ func TestTranslateChatRequestBuildsAssistantToolUseAndToolConfig(t *testing.T) {
 	}
 }
 
+func TestTranslateChatRequestRejectsRequiredToolChoice(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model: "model",
+		Messages: []openai.ChatMessage{
+			{Role: "user", Content: openai.ChatMessageText("hello")},
+		},
+		Tools: []openai.Tool{
+			{
+				Type: "function",
+				Function: &openai.ToolFunction{
+					Name: "lookup",
+				},
+			},
+		},
+		ToolChoice: openai.ChatToolChoiceString("required"),
+	}
+
+	_, err := TranslateChatRequest(req, fakeCatalogRecord("model"))
+	assertInvalidRequestError(t, err)
+}
+
 func TestTranslateChatResponseBuildsToolCalls(t *testing.T) {
 	resp := ConverseResponse{
 		ResponseID: "abc123",
