@@ -66,14 +66,49 @@ func TestCatalogResolveModelReturnsUnderlyingFoundationModel(t *testing.T) {
 	}
 }
 
+func TestCatalogListModelsPrefersFirstResolvableSourceModelInMultiModelProfile(t *testing.T) {
+	catalog := newFakeCatalogAPI()
+	catalog.foundationModels = []ModelRecord{
+		{ID: "amazon.nova-pro-v1:0", Provider: "Amazon", InputModalities: []string{"TEXT"}},
+	}
+	catalog.systemProfiles = []InferenceProfileRecord{
+		{
+			ID:            "us.amazon.nova-pro-v1:0",
+			SourceModelID: "anthropic.claude-does-not-exist-v1:0",
+		},
+	}
+	catalog.profileSourceModelIDs = map[string][]string{
+		"us.amazon.nova-pro-v1:0": {
+			"anthropic.claude-does-not-exist-v1:0",
+			"amazon.nova-pro-v1:0",
+		},
+	}
+
+	got, err := BuildModelCatalog(context.Background(), catalog)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	model, ok := got.ByID["us.amazon.nova-pro-v1:0"]
+	if !ok {
+		t.Fatalf("expected profile to be included when a later source model resolves, got %#v", got.Models)
+	}
+	if model.ResolvedFoundationModelID != "amazon.nova-pro-v1:0" {
+		t.Fatalf("expected profile to resolve to first known foundation model, got %#v", model)
+	}
+	if model.Provider != "Amazon" {
+		t.Fatalf("expected resolved foundation provider to map, got %#v", model)
+	}
+}
+
 func newFakeCatalogAPI() *fakeCatalogAPI {
 	return &fakeCatalogAPI{}
 }
 
 type fakeCatalogAPI struct {
-	foundationModels    []ModelRecord
-	systemProfiles      []InferenceProfileRecord
-	applicationProfiles []InferenceProfileRecord
+	foundationModels      []ModelRecord
+	systemProfiles        []InferenceProfileRecord
+	applicationProfiles   []InferenceProfileRecord
+	profileSourceModelIDs map[string][]string
 }
 
 func (f *fakeCatalogAPI) ListFoundationModels(_ context.Context, _ *bedrocksvc.ListFoundationModelsInput, _ ...func(*bedrocksvc.Options)) (*bedrocksvc.ListFoundationModelsOutput, error) {
@@ -104,12 +139,21 @@ func (f *fakeCatalogAPI) ListInferenceProfiles(_ context.Context, input *bedrock
 
 	summaries := make([]bedrocktypes.InferenceProfileSummary, 0, len(source))
 	for _, profile := range source {
+		models := []bedrocktypes.InferenceProfileModel{
+			{ModelArn: aws.String("arn:aws:bedrock:us-west-2::foundation-model/" + profile.SourceModelID)},
+		}
+		if sourceModelIDs, ok := f.profileSourceModelIDs[profile.ID]; ok && len(sourceModelIDs) > 0 {
+			models = make([]bedrocktypes.InferenceProfileModel, 0, len(sourceModelIDs))
+			for _, sourceModelID := range sourceModelIDs {
+				models = append(models, bedrocktypes.InferenceProfileModel{
+					ModelArn: aws.String("arn:aws:bedrock:us-west-2::foundation-model/" + sourceModelID),
+				})
+			}
+		}
 		summaries = append(summaries, bedrocktypes.InferenceProfileSummary{
 			InferenceProfileId:   aws.String(profile.ID),
 			InferenceProfileName: aws.String(profile.Name),
-			Models: []bedrocktypes.InferenceProfileModel{
-				{ModelArn: aws.String("arn:aws:bedrock:us-west-2::foundation-model/" + profile.SourceModelID)},
-			},
+			Models:               models,
 		})
 	}
 	return &bedrocksvc.ListInferenceProfilesOutput{InferenceProfileSummaries: summaries}, nil

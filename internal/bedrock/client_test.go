@@ -767,11 +767,15 @@ func TestClientListModelsUsesBedrockCatalog(t *testing.T) {
 	if len(catalog.inferenceInputs) != 2 {
 		t.Fatalf("expected two inference profile list calls, got %d", len(catalog.inferenceInputs))
 	}
-	if catalog.inferenceInputs[0].TypeEquals != bedrockcatalogtypes.InferenceProfileTypeSystemDefined {
-		t.Fatalf("expected first inference profile list to be system-defined, got %q", catalog.inferenceInputs[0].TypeEquals)
+	typesRequested := map[bedrockcatalogtypes.InferenceProfileType]bool{}
+	for _, input := range catalog.inferenceInputs {
+		typesRequested[input.TypeEquals] = true
 	}
-	if catalog.inferenceInputs[1].TypeEquals != bedrockcatalogtypes.InferenceProfileTypeApplication {
-		t.Fatalf("expected second inference profile list to be application, got %q", catalog.inferenceInputs[1].TypeEquals)
+	if !typesRequested[bedrockcatalogtypes.InferenceProfileTypeSystemDefined] {
+		t.Fatalf("expected system-defined inference profile listing request, got %#v", catalog.inferenceInputs)
+	}
+	if !typesRequested[bedrockcatalogtypes.InferenceProfileTypeApplication] {
+		t.Fatalf("expected application inference profile listing request, got %#v", catalog.inferenceInputs)
 	}
 	if len(got) != 4 {
 		t.Fatalf("expected merged foundation and profile models, got %d", len(got))

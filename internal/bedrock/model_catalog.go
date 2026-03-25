@@ -25,9 +25,10 @@ type ModelRecord struct {
 }
 
 type InferenceProfileRecord struct {
-	ID            string
-	Name          string
-	SourceModelID string
+	ID             string
+	Name           string
+	SourceModelID  string
+	SourceModelIDs []string
 }
 
 type Catalog struct {
@@ -74,10 +75,14 @@ func BuildModelCatalog(ctx context.Context, api CatalogAPI) (Catalog, error) {
 		return Catalog{}, err
 	}
 	for _, profile := range append(systemProfiles, applicationProfiles...) {
-		if profile.ID == "" || profile.SourceModelID == "" {
+		if profile.ID == "" {
 			continue
 		}
-		source, ok := foundationByID[profile.SourceModelID]
+		resolvedSourceModelID := resolveProfileSourceModelID(profile, foundationByID)
+		if resolvedSourceModelID == "" {
+			continue
+		}
+		source, ok := foundationByID[resolvedSourceModelID]
 		if !ok {
 			continue
 		}
@@ -85,7 +90,7 @@ func BuildModelCatalog(ctx context.Context, api CatalogAPI) (Catalog, error) {
 			ID:                        profile.ID,
 			Name:                      profile.Name,
 			ModelKind:                 modelKindInferenceProfile,
-			ResolvedFoundationModelID: profile.SourceModelID,
+			ResolvedFoundationModelID: resolvedSourceModelID,
 		}
 		record.Provider = source.Provider
 		record.InputModalities = append([]string(nil), source.InputModalities...)
@@ -156,10 +161,16 @@ func listInferenceProfiles(ctx context.Context, api CatalogAPI, profileType bedr
 		}
 
 		for _, profile := range resp.InferenceProfileSummaries {
+			sourceModelIDs := profileSourceModelIDs(profile)
+			sourceModelID := ""
+			if len(sourceModelIDs) > 0 {
+				sourceModelID = sourceModelIDs[0]
+			}
 			out = append(out, InferenceProfileRecord{
-				ID:            aws.ToString(profile.InferenceProfileId),
-				Name:          aws.ToString(profile.InferenceProfileName),
-				SourceModelID: profileSourceModelID(profile),
+				ID:             aws.ToString(profile.InferenceProfileId),
+				Name:           aws.ToString(profile.InferenceProfileName),
+				SourceModelID:  sourceModelID,
+				SourceModelIDs: sourceModelIDs,
 			})
 		}
 
@@ -171,11 +182,27 @@ func listInferenceProfiles(ctx context.Context, api CatalogAPI, profileType bedr
 	return out, nil
 }
 
-func profileSourceModelID(profile bedrockcatalogtypes.InferenceProfileSummary) string {
+func profileSourceModelIDs(profile bedrockcatalogtypes.InferenceProfileSummary) []string {
+	sourceModelIDs := make([]string, 0, len(profile.Models))
 	for _, model := range profile.Models {
 		if modelID := modelIDFromARN(aws.ToString(model.ModelArn)); modelID != "" {
-			return modelID
+			sourceModelIDs = append(sourceModelIDs, modelID)
 		}
+	}
+	return sourceModelIDs
+}
+
+func resolveProfileSourceModelID(profile InferenceProfileRecord, foundationByID map[string]ModelRecord) string {
+	for _, sourceModelID := range profile.SourceModelIDs {
+		if _, ok := foundationByID[sourceModelID]; ok {
+			return sourceModelID
+		}
+	}
+	if profile.SourceModelID == "" {
+		return ""
+	}
+	if _, ok := foundationByID[profile.SourceModelID]; ok {
+		return profile.SourceModelID
 	}
 	return ""
 }
