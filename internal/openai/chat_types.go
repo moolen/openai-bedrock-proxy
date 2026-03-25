@@ -145,6 +145,29 @@ type ChatMessage struct {
 	ToolCalls  []ChatToolCall     `json:"tool_calls,omitempty"`
 }
 
+func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	type chatMessageJSON struct {
+		Role       string              `json:"role"`
+		Content    *ChatMessageContent `json:"content,omitempty"`
+		Name       string              `json:"name,omitempty"`
+		ToolCallID string              `json:"tool_call_id,omitempty"`
+		ToolCalls  []ChatToolCall      `json:"tool_calls,omitempty"`
+	}
+
+	var content *ChatMessageContent
+	if !m.Content.IsZero() {
+		content = &m.Content
+	}
+
+	return json.Marshal(chatMessageJSON{
+		Role:       m.Role,
+		Content:    content,
+		Name:       m.Name,
+		ToolCallID: m.ToolCallID,
+		ToolCalls:  m.ToolCalls,
+	})
+}
+
 type ChatStopKind string
 
 const (
@@ -374,6 +397,50 @@ type ChatCompletionRequest struct {
 	ToolChoice          ChatToolChoice `json:"tool_choice,omitempty"`
 	ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
 	ExtraBody           map[string]any `json:"extra_body,omitempty"`
+}
+
+func (r ChatCompletionRequest) MarshalJSON() ([]byte, error) {
+	type chatCompletionRequestJSON struct {
+		Model               string          `json:"model"`
+		Messages            []ChatMessage   `json:"messages"`
+		Stream              bool            `json:"stream,omitempty"`
+		StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
+		Temperature         *float64        `json:"temperature,omitempty"`
+		TopP                *float64        `json:"top_p,omitempty"`
+		MaxTokens           *int            `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
+		Stop                *ChatStop       `json:"stop,omitempty"`
+		Tools               []Tool          `json:"tools,omitempty"`
+		ToolChoice          *ChatToolChoice `json:"tool_choice,omitempty"`
+		ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+		ExtraBody           map[string]any  `json:"extra_body,omitempty"`
+	}
+
+	var stop *ChatStop
+	if !r.Stop.IsZero() {
+		stop = &r.Stop
+	}
+
+	var toolChoice *ChatToolChoice
+	if !r.ToolChoice.IsZero() {
+		toolChoice = &r.ToolChoice
+	}
+
+	return json.Marshal(chatCompletionRequestJSON{
+		Model:               r.Model,
+		Messages:            r.Messages,
+		Stream:              r.Stream,
+		StreamOptions:       r.StreamOptions,
+		Temperature:         r.Temperature,
+		TopP:                r.TopP,
+		MaxTokens:           r.MaxTokens,
+		MaxCompletionTokens: r.MaxCompletionTokens,
+		Stop:                stop,
+		Tools:               r.Tools,
+		ToolChoice:          toolChoice,
+		ReasoningEffort:     r.ReasoningEffort,
+		ExtraBody:           r.ExtraBody,
+	})
 }
 
 type ChatCompletionChoice struct {

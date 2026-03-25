@@ -243,6 +243,44 @@ func TestChatMessageContentImagePartRoundTripPreservesWireData(t *testing.T) {
 	}
 }
 
+func TestChatMessageMarshalOmitsUnsetContent(t *testing.T) {
+	message := ChatMessage{Role: "assistant"}
+	data, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("expected json marshal to succeed, got %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if _, exists := got["content"]; exists {
+		t.Fatalf("expected content to be omitted, got %#v", got["content"])
+	}
+}
+
+func TestChatCompletionRequestMarshalOmitsUnsetStopAndToolChoice(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model:    "model",
+		Messages: []ChatMessage{{Role: "user", Content: ChatMessageText("hello")}},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("expected json marshal to succeed, got %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if _, exists := got["stop"]; exists {
+		t.Fatalf("expected stop to be omitted, got %#v", got["stop"])
+	}
+	if _, exists := got["tool_choice"]; exists {
+		t.Fatalf("expected tool_choice to be omitted, got %#v", got["tool_choice"])
+	}
+}
+
 func intPtr(value int) *int {
 	return &value
 }
