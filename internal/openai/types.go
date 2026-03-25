@@ -7,9 +7,19 @@ type ToolFunction struct {
 }
 
 type Tool struct {
-	Type     string       `json:"type"`
-	Name     string       `json:"name,omitempty"`
-	Function ToolFunction `json:"function"`
+	Type     string        `json:"type"`
+	Name     string        `json:"name,omitempty"`
+	Function *ToolFunction `json:"function,omitempty"`
+}
+
+type ToolChoiceFunction struct {
+	Name string `json:"name"`
+}
+
+type ToolChoice struct {
+	Type     string              `json:"type"`
+	Name     string              `json:"name,omitempty"`
+	Function *ToolChoiceFunction `json:"function,omitempty"`
 }
 
 type ResponsesRequest struct {

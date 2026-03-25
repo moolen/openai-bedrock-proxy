@@ -202,26 +202,99 @@ func TestValidateResponsesRequestRejectsUnsupportedFields(t *testing.T) {
 	}
 }
 
-func TestValidateResponsesRequestRejectsTools(t *testing.T) {
+func TestValidateResponsesRequestAcceptsFunctionTools(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
 		Input: "hi",
-		Tools: []Tool{{Type: "function", Function: ToolFunction{Name: "lookup"}}},
+		Tools: []Tool{{Type: "function", Function: &ToolFunction{Name: "lookup"}}},
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected tools validation error")
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected tools to be accepted, got %v", err)
 	}
 }
 
-func TestValidateResponsesRequestRejectsToolChoice(t *testing.T) {
+func TestValidateResponsesRequestAcceptsBuiltInTools(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{Type: "web_search_preview"},
+			{Type: "file_search"},
+			{Type: "computer_use_preview"},
+			{Type: "code_interpreter"},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected built-in tools to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsToolChoiceAuto(t *testing.T) {
 	req := ResponsesRequest{
 		Model:      "model",
 		Input:      "hi",
 		ToolChoice: "auto",
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected tool_choice validation error")
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected tool_choice auto to be accepted, got %v", err)
 	}
+}
+
+func TestValidateResponsesRequestAcceptsNamedFunctionToolChoice(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
+		},
+		ToolChoice: map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "lookup",
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected named function tool_choice to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestRejectsMalformedFunctionTool(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{{Type: "function"}},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].function.name is required")
+}
+
+func TestValidateResponsesRequestRejectsMalformedToolChoice(t *testing.T) {
+	req := ResponsesRequest{
+		Model:      "model",
+		Input:      "hi",
+		ToolChoice: map[string]any{"type": "function", "function": map[string]any{}},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function.name is required")
+}
+
+func TestValidateResponsesRequestRejectsUnmappableToolChoice(t *testing.T) {
+	req := ResponsesRequest{
+		Model:      "model",
+		Input:      "hi",
+		ToolChoice: 42,
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice is invalid")
+}
+
+func TestValidateResponsesRequestRejectsUnsupportedBuiltInTool(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{Type: "image_generation"},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].type is not supported")
 }
 
 func TestErrorResponseFromClassifiesWrappedInvalidRequestErrors(t *testing.T) {
