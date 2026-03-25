@@ -13,7 +13,6 @@ import (
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/config"
 	bedrockcatalog "github.com/aws/aws-sdk-go-v2/service/bedrock"
-	bedrockcatalogtypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrockdocument "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -29,6 +28,7 @@ type RuntimeAPI interface {
 
 type CatalogAPI interface {
 	ListFoundationModels(context.Context, *bedrockcatalog.ListFoundationModelsInput, ...func(*bedrockcatalog.Options)) (*bedrockcatalog.ListFoundationModelsOutput, error)
+	ListInferenceProfiles(context.Context, *bedrockcatalog.ListInferenceProfilesInput, ...func(*bedrockcatalog.Options)) (*bedrockcatalog.ListInferenceProfilesOutput, error)
 }
 
 type LoadConfigFunc func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error)
@@ -88,30 +88,27 @@ func (c *Client) ConverseStream(ctx context.Context, input *bedrockruntime.Conve
 }
 
 func (c *Client) ListModels(ctx context.Context) ([]ModelSummary, error) {
-	if c.catalog == nil {
-		return nil, errors.New("bedrock catalog client is not configured")
-	}
-
-	resp, err := c.catalog.ListFoundationModels(ctx, &bedrockcatalog.ListFoundationModelsInput{
-		ByOutputModality: bedrockcatalogtypes.ModelModalityText,
-	})
+	catalog, err := c.Catalog(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	models := make([]ModelSummary, 0, len(resp.ModelSummaries))
-	for _, model := range resp.ModelSummaries {
-		modelID := aws.ToString(model.ModelId)
-		if modelID == "" {
-			continue
-		}
-		models = append(models, ModelSummary{
-			ID:       modelID,
-			Name:     aws.ToString(model.ModelName),
-			Provider: aws.ToString(model.ProviderName),
+	out := make([]ModelSummary, 0, len(catalog.Models))
+	for _, model := range catalog.Models {
+		out = append(out, ModelSummary{
+			ID:       model.ID,
+			Name:     model.Name,
+			Provider: model.Provider,
 		})
 	}
-	return models, nil
+	return out, nil
+}
+
+func (c *Client) Catalog(ctx context.Context) (Catalog, error) {
+	if c.catalog == nil {
+		return Catalog{}, errors.New("bedrock catalog client is not configured")
+	}
+	return BuildModelCatalog(ctx, c.catalog)
 }
 
 func (c *Client) RespondConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (ConverseResponse, error) {

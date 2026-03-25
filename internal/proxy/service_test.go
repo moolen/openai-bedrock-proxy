@@ -483,3 +483,35 @@ func TestServiceListModelsMapsBedrockModelsToOpenAIList(t *testing.T) {
 		t.Fatalf("expected model object, got %q", got.Data[0].Object)
 	}
 }
+
+func TestListModelsPreservesOpenAIListShapeWhileExpandingCatalog(t *testing.T) {
+	svc := NewService(fakeCatalogClientWithProfiles(), conversation.NewInMemoryStore(16))
+	got, err := svc.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Object != "list" || len(got.Data) == 0 {
+		t.Fatalf("unexpected list payload: %#v", got)
+	}
+	first := got.Data[0]
+	if first.ID == "" || first.Object != "model" || first.OwnedBy == "" {
+		t.Fatalf("unexpected model payload: %#v", first)
+	}
+}
+
+func fakeCatalogClientWithProfiles() *fakeBedrock {
+	return &fakeBedrock{
+		models: []bedrock.ModelSummary{
+			{
+				ID:       "anthropic.claude-3-7-sonnet-20250219-v1:0",
+				Name:     "Claude 3.7 Sonnet",
+				Provider: "Anthropic",
+			},
+			{
+				ID:       "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+				Name:     "US Claude 3.7 Sonnet Profile",
+				Provider: "Anthropic",
+			},
+		},
+	}
+}

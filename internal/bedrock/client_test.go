@@ -731,6 +731,26 @@ func TestClientListModelsUsesBedrockCatalog(t *testing.T) {
 				},
 			},
 		},
+		systemProfilesOutput: &bedrocksvc.ListInferenceProfilesOutput{
+			InferenceProfileSummaries: []bedrockcatalogtypes.InferenceProfileSummary{
+				{
+					InferenceProfileId: aws.String("us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
+					Models: []bedrockcatalogtypes.InferenceProfileModel{
+						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0")},
+					},
+				},
+			},
+		},
+		applicationProfilesOutput: &bedrocksvc.ListInferenceProfilesOutput{
+			InferenceProfileSummaries: []bedrockcatalogtypes.InferenceProfileSummary{
+				{
+					InferenceProfileId: aws.String("arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/app-profile"),
+					Models: []bedrockcatalogtypes.InferenceProfileModel{
+						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0")},
+					},
+				},
+			},
+		},
 	}
 	client := &Client{catalog: catalog}
 
@@ -744,17 +764,33 @@ func TestClientListModelsUsesBedrockCatalog(t *testing.T) {
 	if catalog.lastInput.ByOutputModality != bedrockcatalogtypes.ModelModalityText {
 		t.Fatalf("expected output modality filter to be text, got %q", catalog.lastInput.ByOutputModality)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(got))
+	if len(catalog.inferenceInputs) != 2 {
+		t.Fatalf("expected two inference profile list calls, got %d", len(catalog.inferenceInputs))
 	}
-	if got[0].ID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
-		t.Fatalf("expected first model id to map, got %q", got[0].ID)
+	if catalog.inferenceInputs[0].TypeEquals != bedrockcatalogtypes.InferenceProfileTypeSystemDefined {
+		t.Fatalf("expected first inference profile list to be system-defined, got %q", catalog.inferenceInputs[0].TypeEquals)
 	}
-	if got[0].Provider != "Anthropic" {
-		t.Fatalf("expected provider to map, got %q", got[0].Provider)
+	if catalog.inferenceInputs[1].TypeEquals != bedrockcatalogtypes.InferenceProfileTypeApplication {
+		t.Fatalf("expected second inference profile list to be application, got %q", catalog.inferenceInputs[1].TypeEquals)
 	}
-	if got[0].Name != "Claude 3.7 Sonnet" {
-		t.Fatalf("expected name to map, got %q", got[0].Name)
+	if len(got) != 4 {
+		t.Fatalf("expected merged foundation and profile models, got %d", len(got))
+	}
+	seen := map[string]bool{}
+	for _, model := range got {
+		seen[model.ID] = true
+	}
+	if !seen["anthropic.claude-3-7-sonnet-20250219-v1:0"] {
+		t.Fatalf("expected foundation model id in output, got %#v", got)
+	}
+	if !seen["amazon.nova-pro-v1:0"] {
+		t.Fatalf("expected second foundation model id in output, got %#v", got)
+	}
+	if !seen["us.anthropic.claude-3-7-sonnet-20250219-v1:0"] {
+		t.Fatalf("expected system profile id in output, got %#v", got)
+	}
+	if !seen["arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/app-profile"] {
+		t.Fatalf("expected application profile id in output, got %#v", got)
 	}
 }
 
@@ -798,14 +834,29 @@ func (f *fakeStream) Err() error {
 }
 
 type fakeCatalog struct {
-	lastInput *bedrocksvc.ListFoundationModelsInput
-	output    *bedrocksvc.ListFoundationModelsOutput
-	err       error
+	lastInput                 *bedrocksvc.ListFoundationModelsInput
+	inferenceInputs           []*bedrocksvc.ListInferenceProfilesInput
+	output                    *bedrocksvc.ListFoundationModelsOutput
+	systemProfilesOutput      *bedrocksvc.ListInferenceProfilesOutput
+	applicationProfilesOutput *bedrocksvc.ListInferenceProfilesOutput
+	err                       error
 }
 
 func (f *fakeCatalog) ListFoundationModels(_ context.Context, input *bedrocksvc.ListFoundationModelsInput, _ ...func(*bedrocksvc.Options)) (*bedrocksvc.ListFoundationModelsOutput, error) {
 	f.lastInput = input
 	return f.output, f.err
+}
+
+func (f *fakeCatalog) ListInferenceProfiles(_ context.Context, input *bedrocksvc.ListInferenceProfilesInput, _ ...func(*bedrocksvc.Options)) (*bedrocksvc.ListInferenceProfilesOutput, error) {
+	f.inferenceInputs = append(f.inferenceInputs, input)
+	switch input.TypeEquals {
+	case bedrockcatalogtypes.InferenceProfileTypeSystemDefined:
+		return f.systemProfilesOutput, f.err
+	case bedrockcatalogtypes.InferenceProfileTypeApplication:
+		return f.applicationProfilesOutput, f.err
+	default:
+		return &bedrocksvc.ListInferenceProfilesOutput{}, f.err
+	}
 }
 
 func decodeDocument(t *testing.T, doc bedrockdocument.Interface) any {
