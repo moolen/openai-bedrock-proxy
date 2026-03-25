@@ -37,7 +37,19 @@ type Catalog struct {
 
 func (c Catalog) Resolve(id string) (ModelRecord, bool) {
 	record, ok := c.ByID[id]
-	return record, ok
+	if !ok {
+		return ModelRecord{}, false
+	}
+	if record.ModelKind != modelKindInferenceProfile {
+		return record, true
+	}
+	if record.ResolvedFoundationModelID == "" {
+		return ModelRecord{}, false
+	}
+	if _, ok := c.ByID[record.ResolvedFoundationModelID]; !ok {
+		return ModelRecord{}, false
+	}
+	return record, true
 }
 
 func BuildModelCatalog(ctx context.Context, api CatalogAPI) (Catalog, error) {
@@ -65,18 +77,20 @@ func BuildModelCatalog(ctx context.Context, api CatalogAPI) (Catalog, error) {
 		if profile.ID == "" || profile.SourceModelID == "" {
 			continue
 		}
+		source, ok := foundationByID[profile.SourceModelID]
+		if !ok {
+			continue
+		}
 		record := ModelRecord{
 			ID:                        profile.ID,
 			Name:                      profile.Name,
 			ModelKind:                 modelKindInferenceProfile,
 			ResolvedFoundationModelID: profile.SourceModelID,
 		}
-		if source, ok := foundationByID[profile.SourceModelID]; ok {
-			record.Provider = source.Provider
-			record.InputModalities = append([]string(nil), source.InputModalities...)
-			if record.Name == "" {
-				record.Name = source.Name
-			}
+		record.Provider = source.Provider
+		record.InputModalities = append([]string(nil), source.InputModalities...)
+		if record.Name == "" {
+			record.Name = source.Name
 		}
 		byID[record.ID] = record
 	}

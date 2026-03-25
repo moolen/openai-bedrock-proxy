@@ -16,9 +16,11 @@ func TestCatalogListModelsMergesFoundationAndInferenceProfiles(t *testing.T) {
 	}
 	catalog.systemProfiles = []InferenceProfileRecord{
 		{ID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0", SourceModelID: "anthropic.claude-3-7-sonnet-20250219-v1:0"},
+		{ID: "us.anthropic.claude-unresolvable-v1:0", SourceModelID: "anthropic.claude-does-not-exist-v1:0"},
 	}
 	catalog.applicationProfiles = []InferenceProfileRecord{
 		{ID: "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/app-profile", SourceModelID: "anthropic.claude-3-7-sonnet-20250219-v1:0"},
+		{ID: "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/unresolvable", SourceModelID: "anthropic.unknown-model-v1:0"},
 	}
 	got, err := BuildModelCatalog(context.Background(), catalog)
 	if err != nil {
@@ -27,20 +29,40 @@ func TestCatalogListModelsMergesFoundationAndInferenceProfiles(t *testing.T) {
 	if len(got.Models) != 3 {
 		t.Fatalf("expected merged catalog, got %#v", got.Models)
 	}
+	if _, ok := got.ByID["us.anthropic.claude-unresolvable-v1:0"]; ok {
+		t.Fatalf("expected unresolved system profile to be excluded, got %#v", got.ByID["us.anthropic.claude-unresolvable-v1:0"])
+	}
+	if _, ok := got.ByID["arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/unresolvable"]; ok {
+		t.Fatalf("expected unresolved application profile to be excluded, got %#v", got.ByID["arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/unresolvable"])
+	}
 }
 
 func TestCatalogResolveModelReturnsUnderlyingFoundationModel(t *testing.T) {
 	catalog := Catalog{
 		ByID: map[string]ModelRecord{
+			"anthropic.claude-3-7-sonnet-20250219-v1:0": {
+				ID:        "anthropic.claude-3-7-sonnet-20250219-v1:0",
+				ModelKind: modelKindFoundationModel,
+			},
 			"us.anthropic.claude-3-7-sonnet-20250219-v1:0": {
 				ID:                        "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+				ModelKind:                 modelKindInferenceProfile,
 				ResolvedFoundationModelID: "anthropic.claude-3-7-sonnet-20250219-v1:0",
+			},
+			"us.anthropic.unresolved-profile-v1:0": {
+				ID:                        "us.anthropic.unresolved-profile-v1:0",
+				ModelKind:                 modelKindInferenceProfile,
+				ResolvedFoundationModelID: "anthropic.claude-does-not-exist-v1:0",
 			},
 		},
 	}
 	got, ok := catalog.Resolve("us.anthropic.claude-3-7-sonnet-20250219-v1:0")
 	if !ok || got.ResolvedFoundationModelID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
 		t.Fatalf("expected profile resolution, got %#v ok=%v", got, ok)
+	}
+
+	if _, ok := catalog.Resolve("us.anthropic.unresolved-profile-v1:0"); ok {
+		t.Fatalf("expected unresolved profile to fail resolution")
 	}
 }
 

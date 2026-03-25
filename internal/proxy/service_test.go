@@ -497,6 +497,22 @@ func TestListModelsPreservesOpenAIListShapeWhileExpandingCatalog(t *testing.T) {
 	if first.ID == "" || first.Object != "model" || first.OwnedBy == "" {
 		t.Fatalf("unexpected model payload: %#v", first)
 	}
+	if len(got.Data) < 2 {
+		t.Fatalf("expected expanded catalog with foundation and profile ids, got %#v", got.Data)
+	}
+	seen := map[string]bool{}
+	for _, model := range got.Data {
+		seen[model.ID] = true
+		if model.Object != "model" || model.OwnedBy == "" {
+			t.Fatalf("unexpected model payload shape: %#v", model)
+		}
+	}
+	if !seen["anthropic.claude-3-7-sonnet-20250219-v1:0"] {
+		t.Fatalf("expected foundation model id in list, got %#v", got.Data)
+	}
+	if !seen["us.anthropic.claude-3-7-sonnet-20250219-v1:0"] {
+		t.Fatalf("expected profile-backed model id in list, got %#v", got.Data)
+	}
 }
 
 func fakeCatalogClientWithProfiles() *fakeBedrock {
