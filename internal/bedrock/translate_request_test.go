@@ -282,6 +282,14 @@ func TestTranslateConversationRejectsEmptyToolNames(t *testing.T) {
 				BuiltIn: true,
 			},
 		},
+		{
+			name: "empty synthetic built-in type",
+			tool: conversation.ToolDefinition{
+				Type:    "",
+				Name:    "__builtin_unknown",
+				BuiltIn: true,
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -315,6 +323,32 @@ func TestTranslateConversationRejectsToolChoiceWithoutTools(t *testing.T) {
 			},
 		},
 		ToolChoice: conversation.ToolChoice{Type: "auto"},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateConversationRejectsMalformedSpecificToolChoiceShape(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type: "function",
+				Name: "lookup",
+			},
+		},
+		ToolChoice: conversation.ToolChoice{
+			Type: "unexpected_type",
+			Name: "lookup",
+		},
 	}
 
 	_, err := TranslateConversation("model", request, nil, nil)

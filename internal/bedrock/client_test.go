@@ -457,6 +457,21 @@ func TestClientRespondConversationOmitsEmptyToolDescription(t *testing.T) {
 	}
 }
 
+func TestToSDKToolResultContentPanicsOnUnknownInternalType(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for unknown internal tool result content type")
+		}
+	}()
+
+	toSDKToolResultContent([]ToolResultContentBlock{
+		{
+			Type: "unknown",
+			JSON: map[string]any{"ignored": true},
+		},
+	})
+}
+
 func TestClientStreamConversationRejectsNilResponse(t *testing.T) {
 	client := &Client{runtime: &fakeRuntime{}}
 	_, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{

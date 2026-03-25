@@ -188,7 +188,7 @@ func toToolConfig(tools []conversation.ToolDefinition, choice conversation.ToolC
 		specs = append(specs, spec)
 	}
 
-	toolChoice, err := toBedrockToolChoice(choice)
+	toolChoice, err := toBedrockToolChoice(choice, tools)
 	if err != nil {
 		return nil, err
 	}
@@ -201,13 +201,13 @@ func toToolConfig(tools []conversation.ToolDefinition, choice conversation.ToolC
 	}, nil
 }
 
-func toBedrockToolChoice(choice conversation.ToolChoice) (*ToolChoice, error) {
+func toBedrockToolChoice(choice conversation.ToolChoice, tools []conversation.ToolDefinition) (*ToolChoice, error) {
 	switch {
 	case choice == (conversation.ToolChoice{}):
 		return nil, nil
 	case choice.Type == "auto":
 		return &ToolChoice{Auto: true}, nil
-	case choice.Name != "":
+	case choice.Name != "" && namedToolChoiceExists(choice, tools):
 		return &ToolChoice{Tool: choice.Name}, nil
 	default:
 		return nil, openai.NewInvalidRequestError("unsupported tool_choice")
@@ -216,6 +216,9 @@ func toBedrockToolChoice(choice conversation.ToolChoice) (*ToolChoice, error) {
 
 func toToolSpec(tool conversation.ToolDefinition) (ToolSpec, error) {
 	if tool.BuiltIn {
+		if strings.TrimSpace(tool.Type) == "" {
+			return ToolSpec{}, openai.NewInvalidRequestError("built-in tool type is required")
+		}
 		if strings.TrimSpace(tool.Name) == "" {
 			return ToolSpec{}, openai.NewInvalidRequestError("built-in tool name is required")
 		}
@@ -346,6 +349,15 @@ func toToolResultContentBlocks(output any) []ToolResultContentBlock {
 func toolSetContains(tools []ToolSpec, name string) bool {
 	for _, tool := range tools {
 		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func namedToolChoiceExists(choice conversation.ToolChoice, tools []conversation.ToolDefinition) bool {
+	for _, tool := range tools {
+		if tool.Name == choice.Name && tool.Type == choice.Type {
 			return true
 		}
 	}

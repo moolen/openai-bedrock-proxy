@@ -367,11 +367,11 @@ func toSDKToolResultContent(content []ToolResultContentBlock) []bedrocktypes.Too
 		case toolResultContentTypeText:
 			out = append(out, &bedrocktypes.ToolResultContentBlockMemberText{Value: block.Text})
 		case toolResultContentTypeJSON:
-			fallthrough
-		default:
 			out = append(out, &bedrocktypes.ToolResultContentBlockMemberJson{
 				Value: bedrockdocument.NewLazyDocument(block.JSON),
 			})
+		default:
+			panic(fmt.Sprintf("unknown tool result content type: %q", block.Type))
 		}
 	}
 	return out
