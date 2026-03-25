@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.3
 	github.com/aws/smithy-go v1.24.2
 	github.com/klauspost/compress v1.18.5
+	github.com/tiktoken-go/tokenizer v0.7.0
 )
 
 require (
@@ -24,4 +25,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 )

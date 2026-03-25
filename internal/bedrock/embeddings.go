@@ -88,12 +88,9 @@ func (titanEmbeddingAdapter) Embed(ctx context.Context, runtime RuntimeAPI, mode
 		return openai.EmbeddingsResponse{}, openai.NewInvalidRequestError("dimensions is only supported for Nova embedding models")
 	}
 
-	texts, err := openai.NormalizeEmbeddingsInput(req.Input)
+	text, err := openai.NormalizeSingleStringEmbeddingsInput(req.Input)
 	if err != nil {
 		return openai.EmbeddingsResponse{}, err
-	}
-	if len(texts) != 1 {
-		return openai.EmbeddingsResponse{}, openai.NewInvalidRequestError("Amazon Titan Embeddings models support only single strings as input")
 	}
 
 	var payload struct {
@@ -101,7 +98,7 @@ func (titanEmbeddingAdapter) Embed(ctx context.Context, runtime RuntimeAPI, mode
 		InputTextTokenCount int       `json:"inputTextTokenCount"`
 	}
 	if err := invokeModelJSON(ctx, runtime, modelID, map[string]any{
-		"inputText": texts[0],
+		"inputText": text,
 	}, &payload); err != nil {
 		return openai.EmbeddingsResponse{}, err
 	}

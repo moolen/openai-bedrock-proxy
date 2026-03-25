@@ -43,3 +43,46 @@ func TestValidateEmbeddingsRequestAcceptsJSONDecodedStringArrayInput(t *testing.
 		t.Fatalf("expected JSON-decoded string array input to validate, got %v", err)
 	}
 }
+
+func TestValidateEmbeddingsRequestAcceptsTokenArrayInput(t *testing.T) {
+	req := EmbeddingsRequest{
+		Model: "cohere.embed-english-v3",
+		Input: []int{15339},
+	}
+	if err := ValidateEmbeddingsRequest(req); err != nil {
+		t.Fatalf("expected token array input to validate, got %v", err)
+	}
+}
+
+func TestValidateEmbeddingsRequestAcceptsTokenArrayBatchInput(t *testing.T) {
+	req := EmbeddingsRequest{
+		Model: "cohere.embed-english-v3",
+		Input: [][]int{{15339}, {14957}},
+	}
+	if err := ValidateEmbeddingsRequest(req); err != nil {
+		t.Fatalf("expected token array batch input to validate, got %v", err)
+	}
+}
+
+func TestValidateEmbeddingsRequestAcceptsJSONDecodedTokenArrayInput(t *testing.T) {
+	req := EmbeddingsRequest{
+		Model: "cohere.embed-english-v3",
+		Input: []any{float64(15339)},
+	}
+	if err := ValidateEmbeddingsRequest(req); err != nil {
+		t.Fatalf("expected JSON-decoded token array input to validate, got %v", err)
+	}
+}
+
+func TestValidateEmbeddingsRequestAcceptsJSONDecodedTokenArrayBatchInput(t *testing.T) {
+	req := EmbeddingsRequest{
+		Model: "cohere.embed-english-v3",
+		Input: []any{
+			[]any{float64(15339)},
+			[]any{float64(14957)},
+		},
+	}
+	if err := ValidateEmbeddingsRequest(req); err != nil {
+		t.Fatalf("expected JSON-decoded token array batch input to validate, got %v", err)
+	}
+}
