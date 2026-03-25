@@ -131,6 +131,114 @@ func TestResponsesHandlerRejectsUnsupportedContentEncoding(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerAcceptsResponsesRequestWithTools(t *testing.T) {
+	svc := &fakeService{
+		response: openai.Response{ID: "resp_1", Object: "response", Model: "model"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}
+		]
+	}`))
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if svc.calls != 1 {
+		t.Fatalf("expected service to be called once, got %d", svc.calls)
+	}
+	if len(svc.lastRequest.Tools) != 1 {
+		t.Fatalf("expected one decoded tool, got %#v", svc.lastRequest.Tools)
+	}
+	if svc.lastRequest.Tools[0].Type != "function" || svc.lastRequest.Tools[0].Function == nil || svc.lastRequest.Tools[0].Function.Name != "lookup" {
+		t.Fatalf("expected decoded function tool, got %#v", svc.lastRequest.Tools[0])
+	}
+}
+
+func TestResponsesHandlerRejectsMalformedToolDefinition(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[{"type":"function","function":{"parameters":{"type":"object"}}}]
+	}`))
+
+	NewServer(&fakeService{}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	var body openai.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected valid error response, got %v", err)
+	}
+	if body.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected invalid request error type, got %q", body.Error.Type)
+	}
+}
+
+func TestResponsesHandlerSerializesToolCallOutputs(t *testing.T) {
+	svc := &fakeService{
+		response: openai.Response{
+			ID:     "resp_1",
+			Object: "response",
+			Model:  "model",
+			Output: []openai.OutputItem{
+				{
+					Type:      "function_call",
+					CallID:    "call_1",
+					Name:      "lookup",
+					Arguments: `{"q":"weather"}`,
+				},
+				{
+					Type:   "web_search_call",
+					CallID: "call_web",
+					Action: map[string]any{"query": "golang"},
+				},
+			},
+		},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi"}`))
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected valid json response, got %v", err)
+	}
+	output, ok := body["output"].([]any)
+	if !ok || len(output) != 2 {
+		t.Fatalf("expected serialized output items, got %#v", body["output"])
+	}
+	functionCall, ok := output[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first output item object, got %#v", output[0])
+	}
+	if functionCall["type"] != "function_call" || functionCall["call_id"] != "call_1" || functionCall["name"] != "lookup" {
+		t.Fatalf("expected serialized function call item, got %#v", functionCall)
+	}
+	if functionCall["arguments"] != `{"q":"weather"}` {
+		t.Fatalf("expected serialized function arguments, got %#v", functionCall)
+	}
+	webSearchCall, ok := output[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected second output item object, got %#v", output[1])
+	}
+	action, ok := webSearchCall["action"].(map[string]any)
+	if !ok || action["query"] != "golang" {
+		t.Fatalf("expected serialized built-in action payload, got %#v", webSearchCall)
+	}
+}
+
 type fakeService struct {
 	response    openai.Response
 	models      openai.ModelsList

@@ -86,7 +86,7 @@ func (s *Service) Respond(ctx context.Context, req openai.ResponsesRequest) (ope
 	}
 
 	response := bedrock.TranslateResponse(resp, req.Model)
-	snapshot := conversation.AppendAssistantReply(merged, resp.Text)
+	snapshot := appendAssistantReply(merged, resp.Output)
 	s.store.Save(conversation.RecordFromResponse(response.ID, req.Model, snapshot))
 
 	logger.Info("proxy respond completed",
@@ -95,7 +95,7 @@ func (s *Service) Respond(ctx context.Context, req openai.ResponsesRequest) (ope
 	)
 	logger.Debug("persisted response snapshot",
 		"response_id", response.ID,
-		"assistant_text", resp.Text,
+		"assistant_output", resp.Output,
 		"snapshot_messages", snapshot.Messages,
 		"snapshot_message_count", len(snapshot.Messages),
 	)
@@ -163,7 +163,7 @@ func (s *Service) Stream(ctx context.Context, req openai.ResponsesRequest, w htt
 		return err
 	}
 
-	snapshot := conversation.AppendAssistantReply(merged, resp.Text)
+	snapshot := appendAssistantReply(merged, resp.Output)
 	responseID := openAIResponseID(resp.ResponseID)
 	s.store.Save(conversation.RecordFromResponse(responseID, req.Model, snapshot))
 
@@ -174,7 +174,7 @@ func (s *Service) Stream(ctx context.Context, req openai.ResponsesRequest, w htt
 	)
 	logger.Debug("persisted streamed response snapshot",
 		"response_id", responseID,
-		"assistant_text", resp.Text,
+		"assistant_output", resp.Output,
 		"snapshot_messages", snapshot.Messages,
 		"snapshot_message_count", len(snapshot.Messages),
 	)
@@ -221,6 +221,45 @@ func (s *Service) loadPrevious(previousResponseID string) (conversation.Record, 
 
 func openAIResponseID(bedrockResponseID string) string {
 	return "resp_" + bedrockResponseID
+}
+
+func appendAssistantReply(req conversation.Request, output []bedrock.OutputBlock) conversation.Request {
+	blocks := assistantBlocks(output)
+	if len(blocks) == 0 {
+		return req
+	}
+	return conversation.AppendAssistantReply(req, blocks)
+}
+
+func assistantBlocks(output []bedrock.OutputBlock) []conversation.Block {
+	if len(output) == 0 {
+		return nil
+	}
+
+	blocks := make([]conversation.Block, 0, len(output))
+	for _, block := range output {
+		switch block.Type {
+		case bedrock.OutputBlockTypeToolCall:
+			if block.ToolCall == nil {
+				continue
+			}
+			blocks = append(blocks, conversation.Block{
+				Type: conversation.BlockTypeToolCall,
+				ToolCall: &conversation.ToolCall{
+					ID:        block.ToolCall.ID,
+					Name:      block.ToolCall.Name,
+					Arguments: block.ToolCall.Arguments,
+				},
+			})
+		default:
+			blocks = append(blocks, conversation.Block{
+				Type: conversation.BlockTypeText,
+				Text: block.Text,
+			})
+		}
+	}
+
+	return blocks
 }
 
 func proxyLogger(ctx context.Context) *slog.Logger {

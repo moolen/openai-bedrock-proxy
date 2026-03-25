@@ -5,7 +5,9 @@ import "testing"
 func TestTranslateConverseResponseBuildsOutputText(t *testing.T) {
 	resp := ConverseResponse{
 		ResponseID: "bedrock-1",
-		Text:       "hello back",
+		Output: []OutputBlock{
+			{Type: OutputBlockTypeText, Text: "hello back"},
+		},
 		StopReason: "end_turn",
 	}
 	got := TranslateResponse(resp, "model")
@@ -35,6 +37,101 @@ func TestTranslateConverseResponseBuildsOutputText(t *testing.T) {
 	}
 	if got.Output[0].Content[0].Text != "hello back" {
 		t.Fatalf("expected text content to pass through, got %q", got.Output[0].Content[0].Text)
+	}
+}
+
+func TestTranslateConverseResponseBuildsFunctionCallOutput(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call_123",
+					Name:      "lookup",
+					Arguments: `{"q":"hi"}`,
+				},
+			},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(got.Output))
+	}
+	if got.Output[0].Type != "function_call" {
+		t.Fatalf("expected function_call output, got %#v", got.Output[0])
+	}
+	if got.Output[0].CallID != "call_123" {
+		t.Fatalf("expected call id to pass through, got %#v", got.Output[0])
+	}
+	if got.Output[0].Name != "lookup" {
+		t.Fatalf("expected tool name to pass through, got %#v", got.Output[0])
+	}
+	if got.Output[0].Arguments != `{"q":"hi"}` {
+		t.Fatalf("expected arguments JSON to pass through, got %#v", got.Output[0])
+	}
+}
+
+func TestTranslateConverseResponseMapsSyntheticBuiltInToolCall(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call_web",
+					Name:      "__builtin_web_search_preview",
+					Arguments: `{"query":"golang"}`,
+				},
+			},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(got.Output))
+	}
+	if got.Output[0].Type != "web_search_call" {
+		t.Fatalf("expected built-in output type, got %#v", got.Output[0])
+	}
+	if got.Output[0].CallID != "call_web" {
+		t.Fatalf("expected built-in call id, got %#v", got.Output[0])
+	}
+	if got.Output[0].Action["query"] != "golang" {
+		t.Fatalf("expected built-in action payload, got %#v", got.Output[0].Action)
+	}
+}
+
+func TestTranslateConverseResponsePreservesMixedTextAndToolOrder(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{Type: OutputBlockTypeText, Text: "Checking"},
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call_123",
+					Name:      "lookup",
+					Arguments: `{"q":"weather"}`,
+				},
+			},
+			{Type: OutputBlockTypeText, Text: "Waiting"},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 3 {
+		t.Fatalf("expected 3 ordered output items, got %#v", got.Output)
+	}
+	if got.Output[0].Type != "message" || got.Output[0].Content[0].Text != "Checking" {
+		t.Fatalf("expected leading text message, got %#v", got.Output[0])
+	}
+	if got.Output[1].Type != "function_call" || got.Output[1].CallID != "call_123" {
+		t.Fatalf("expected middle tool call, got %#v", got.Output[1])
+	}
+	if got.Output[2].Type != "message" || got.Output[2].Content[0].Text != "Waiting" {
+		t.Fatalf("expected trailing text message, got %#v", got.Output[2])
 	}
 }
 

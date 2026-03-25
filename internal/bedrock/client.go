@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -144,12 +145,12 @@ func (c *Client) RespondConversation(ctx context.Context, modelID string, req co
 
 	result := ConverseResponse{
 		ResponseID: responseIDFromMetadata(resp),
-		Text:       extractText(resp),
+		Output:     extractOutput(resp),
 	}
 	logger.Info("bedrock converse completed", "response_id", result.ResponseID)
-	logger.Debug("bedrock converse response text",
+	logger.Debug("bedrock converse response output",
 		"response_id", result.ResponseID,
-		"text", result.Text,
+		"output", result.Output,
 	)
 	return result, nil
 }
@@ -197,7 +198,7 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 	text, stopReason, err := processStream(stream, w, logger)
 	result := ConverseResponse{
 		ResponseID: responseIDFromStreamMetadata(resp),
-		Text:       text,
+		Output:     textOutputBlocks(text),
 		StopReason: stopReason,
 	}
 	if err != nil {
@@ -215,7 +216,7 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 	)
 	logger.Debug("bedrock stream final text",
 		"response_id", result.ResponseID,
-		"text", text,
+		"output", result.Output,
 	)
 	return result, nil
 }
@@ -377,23 +378,36 @@ func toSDKToolResultContent(content []ToolResultContentBlock) []bedrocktypes.Too
 	return out
 }
 
-func extractText(resp *bedrockruntime.ConverseOutput) string {
+func extractOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {
 	if resp == nil {
-		return ""
+		return nil
 	}
 
 	output, ok := resp.Output.(*bedrocktypes.ConverseOutputMemberMessage)
 	if !ok {
-		return ""
+		return nil
 	}
 
-	text := ""
+	blocks := make([]OutputBlock, 0, len(output.Value.Content))
 	for _, block := range output.Value.Content {
-		if textBlock, ok := block.(*bedrocktypes.ContentBlockMemberText); ok {
-			text += textBlock.Value
+		switch typed := block.(type) {
+		case *bedrocktypes.ContentBlockMemberText:
+			blocks = append(blocks, OutputBlock{
+				Type: OutputBlockTypeText,
+				Text: typed.Value,
+			})
+		case *bedrocktypes.ContentBlockMemberToolUse:
+			blocks = append(blocks, OutputBlock{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        aws.ToString(typed.Value.ToolUseId),
+					Name:      aws.ToString(typed.Value.Name),
+					Arguments: mustMarshalToolUseInput(typed.Value.Input),
+				},
+			})
 		}
 	}
-	return text
+	return blocks
 }
 
 func responseIDFromMetadata(resp *bedrockruntime.ConverseOutput) string {
@@ -457,6 +471,36 @@ func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logg
 	}
 
 	return accumulator.Text(), stopReason, stream.Err()
+}
+
+func textOutputBlocks(text string) []OutputBlock {
+	if text == "" {
+		return nil
+	}
+	return []OutputBlock{{
+		Type: OutputBlockTypeText,
+		Text: text,
+	}}
+}
+
+func mustMarshalToolUseInput(document bedrockdocument.Interface) string {
+	if document == nil {
+		return "{}"
+	}
+
+	encoded, err := document.MarshalSmithyDocument()
+	if err != nil {
+		return "{}"
+	}
+	var value any
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return "{}"
+	}
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(normalized)
 }
 
 func fallbackResponseID() string {

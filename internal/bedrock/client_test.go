@@ -189,8 +189,8 @@ func TestClientRespondConversationBuildsConverseInputAndParsesText(t *testing.T)
 	if runtime.lastConverseInput.InferenceConfig.Temperature == nil || *runtime.lastConverseInput.InferenceConfig.Temperature != float32(temperature) {
 		t.Fatalf("expected temperature to map, got %v", runtime.lastConverseInput.InferenceConfig.Temperature)
 	}
-	if resp.Text != "normalized reply" {
-		t.Fatalf("expected response text, got %q", resp.Text)
+	if len(resp.Output) != 1 || resp.Output[0].Type != OutputBlockTypeText || resp.Output[0].Text != "normalized reply" {
+		t.Fatalf("expected text output block, got %#v", resp.Output)
 	}
 	if resp.ResponseID == "" {
 		t.Fatalf("expected response id, got %q", resp.ResponseID)
@@ -266,8 +266,8 @@ func TestClientRespondConversationBuildsToolAwareConverseInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Text != "done" {
-		t.Fatalf("expected translated response text, got %q", resp.Text)
+	if len(resp.Output) != 1 || resp.Output[0].Type != OutputBlockTypeText || resp.Output[0].Text != "done" {
+		t.Fatalf("expected translated response output, got %#v", resp.Output)
 	}
 	if runtime.lastConverseInput == nil {
 		t.Fatal("expected converse input to be captured")
@@ -358,6 +358,60 @@ func TestClientRespondConversationBuildsToolAwareConverseInput(t *testing.T) {
 	}
 	if builtInSchema["x-openai-tool-type"] != "web_search_preview" {
 		t.Fatalf("expected built-in schema metadata, got %#v", builtInSchema)
+	}
+}
+
+func TestClientRespondConversationParsesMixedTextAndToolUseOutput(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberText{Value: "Checking"},
+						&bedrocktypes.ContentBlockMemberToolUse{
+							Value: bedrocktypes.ToolUseBlock{
+								ToolUseId: aws.String("call_123"),
+								Name:      aws.String("lookup"),
+								Input:     bedrockdocument.NewLazyDocument(map[string]any{"q": "weather"}),
+							},
+						},
+						&bedrocktypes.ContentBlockMemberText{Value: "Waiting"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	resp, err := client.RespondConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{{
+			Role: "user",
+			Blocks: []conversation.Block{
+				{Type: conversation.BlockTypeText, Text: "hello"},
+			},
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(resp.Output) != 3 {
+		t.Fatalf("expected 3 output blocks, got %#v", resp.Output)
+	}
+	if resp.Output[0].Type != OutputBlockTypeText || resp.Output[0].Text != "Checking" {
+		t.Fatalf("expected first text block, got %#v", resp.Output[0])
+	}
+	if resp.Output[1].Type != OutputBlockTypeToolCall || resp.Output[1].ToolCall == nil {
+		t.Fatalf("expected tool call block, got %#v", resp.Output[1])
+	}
+	if resp.Output[1].ToolCall.ID != "call_123" || resp.Output[1].ToolCall.Name != "lookup" {
+		t.Fatalf("expected tool call metadata, got %#v", resp.Output[1].ToolCall)
+	}
+	if resp.Output[1].ToolCall.Arguments != `{"q":"weather"}` {
+		t.Fatalf("expected tool call arguments JSON, got %q", resp.Output[1].ToolCall.Arguments)
+	}
+	if resp.Output[2].Type != OutputBlockTypeText || resp.Output[2].Text != "Waiting" {
+		t.Fatalf("expected trailing text block, got %#v", resp.Output[2])
 	}
 }
 
@@ -527,8 +581,8 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	if !errors.Is(err, streamErr) {
 		t.Fatalf("expected stream error, got %v", err)
 	}
-	if resp.Text != "hello world" {
-		t.Fatalf("expected accumulated text, got %q", resp.Text)
+	if len(resp.Output) != 1 || resp.Output[0].Type != OutputBlockTypeText || resp.Output[0].Text != "hello world" {
+		t.Fatalf("expected accumulated text output, got %#v", resp.Output)
 	}
 	if resp.StopReason != string(bedrocktypes.StopReasonEndTurn) {
 		t.Fatalf("expected stop reason to map, got %q", resp.StopReason)

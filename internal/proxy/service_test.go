@@ -73,17 +73,31 @@ func (f *fakeBedrock) ListModels(context.Context) ([]bedrock.ModelSummary, error
 	return f.models, f.modelsErr
 }
 
+func textMessage(role, text string) conversation.Message {
+	return conversation.Message{
+		Role: role,
+		Blocks: []conversation.Block{
+			{Type: conversation.BlockTypeText, Text: text},
+		},
+	}
+}
+
 func TestServiceRespondUsesPreviousResponseSnapshot(t *testing.T) {
 	store := newRecordingStore()
 	store.Save(conversation.Record{
 		ResponseID: "resp_prev",
 		ModelID:    "old-model",
 		Messages: []conversation.Message{
-			{Role: "user", Text: "hi"},
-			{Role: "assistant", Text: "hello"},
+			textMessage("user", "hi"),
+			textMessage("assistant", "hello"),
 		},
 	})
-	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "1", Text: "ok"}}
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "1",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "ok"},
+		},
+	}}
 	svc := NewService(client, store)
 
 	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
@@ -99,13 +113,13 @@ func TestServiceRespondUsesPreviousResponseSnapshot(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected 3 merged messages, got %d", len(got))
 	}
-	if got[0].Role != "user" || got[0].Text != "hi" {
+	if got[0].Role != "user" || got[0].Blocks[0].Text != "hi" {
 		t.Fatalf("expected first message to be previous user, got %#v", got[0])
 	}
-	if got[1].Role != "assistant" || got[1].Text != "hello" {
+	if got[1].Role != "assistant" || got[1].Blocks[0].Text != "hello" {
 		t.Fatalf("expected second message to be previous assistant, got %#v", got[1])
 	}
-	if got[2].Role != "user" || got[2].Text != "next" {
+	if got[2].Role != "user" || got[2].Blocks[0].Text != "next" {
 		t.Fatalf("expected third message to be current user, got %#v", got[2])
 	}
 }
@@ -116,11 +130,16 @@ func TestServiceRespondRebuildsTurnLocalSystemContext(t *testing.T) {
 		ResponseID: "resp_prev",
 		ModelID:    "old-model",
 		Messages: []conversation.Message{
-			{Role: "user", Text: "hi"},
-			{Role: "assistant", Text: "hello"},
+			textMessage("user", "hi"),
+			textMessage("assistant", "hello"),
 		},
 	})
-	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "1", Text: "ok"}}
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "1",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "ok"},
+		},
+	}}
 	svc := NewService(client, store)
 
 	input := []any{
@@ -152,11 +171,16 @@ func TestServiceRespondPersistsAssistantReplyInSnapshot(t *testing.T) {
 		ResponseID: "resp_prev",
 		ModelID:    "old-model",
 		Messages: []conversation.Message{
-			{Role: "user", Text: "prior"},
-			{Role: "assistant", Text: "context"},
+			textMessage("user", "prior"),
+			textMessage("assistant", "context"),
 		},
 	}
-	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "abc", Text: "assistant"}}
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "abc",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "assistant"},
+		},
+	}}
 	svc := NewService(client, store)
 
 	resp, err := svc.Respond(context.Background(), openai.ResponsesRequest{
@@ -177,17 +201,138 @@ func TestServiceRespondPersistsAssistantReplyInSnapshot(t *testing.T) {
 	if len(store.last.Messages) != 4 {
 		t.Fatalf("expected 4 messages in snapshot, got %d", len(store.last.Messages))
 	}
-	if store.last.Messages[0].Role != "user" || store.last.Messages[0].Text != "prior" {
+	if store.last.Messages[0].Role != "user" || store.last.Messages[0].Blocks[0].Text != "prior" {
 		t.Fatalf("expected prior user message to be persisted, got %#v", store.last.Messages[0])
 	}
-	if store.last.Messages[1].Role != "assistant" || store.last.Messages[1].Text != "context" {
+	if store.last.Messages[1].Role != "assistant" || store.last.Messages[1].Blocks[0].Text != "context" {
 		t.Fatalf("expected prior assistant message to be persisted, got %#v", store.last.Messages[1])
 	}
-	if store.last.Messages[2].Role != "user" || store.last.Messages[2].Text != "hi" {
+	if store.last.Messages[2].Role != "user" || store.last.Messages[2].Blocks[0].Text != "hi" {
 		t.Fatalf("expected current user message to be persisted, got %#v", store.last.Messages[2])
 	}
-	if store.last.Messages[3].Role != "assistant" || store.last.Messages[3].Text != "assistant" {
+	if store.last.Messages[3].Role != "assistant" || store.last.Messages[3].Blocks[0].Text != "assistant" {
 		t.Fatalf("expected assistant reply to be persisted, got %#v", store.last.Messages[3])
+	}
+}
+
+func TestServiceRespondPersistsAssistantToolCallInSnapshot(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "abc",
+		Output: []bedrock.OutputBlock{
+			{
+				Type: bedrock.OutputBlockTypeToolCall,
+				ToolCall: &bedrock.ToolCall{
+					ID:        "call_1",
+					Name:      "lookup",
+					Arguments: `{"q":"weather"}`,
+				},
+			},
+		},
+	}}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []openai.Tool{
+			{
+				Type: "function",
+				Function: &openai.ToolFunction{
+					Name: "lookup",
+					Parameters: map[string]any{
+						"type": "object",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(client.lastRequest.Tools) != 1 || client.lastRequest.Tools[0].Name != "lookup" {
+		t.Fatalf("expected tool definitions to reach bedrock, got %#v", client.lastRequest.Tools)
+	}
+	if len(store.last.Messages) != 2 {
+		t.Fatalf("expected user turn and assistant tool call, got %#v", store.last.Messages)
+	}
+	if store.last.Messages[1].Role != "assistant" {
+		t.Fatalf("expected assistant message, got %#v", store.last.Messages[1])
+	}
+	if len(store.last.Messages[1].Blocks) != 1 || store.last.Messages[1].Blocks[0].ToolCall == nil {
+		t.Fatalf("expected assistant tool call block, got %#v", store.last.Messages[1].Blocks)
+	}
+	if store.last.Messages[1].Blocks[0].ToolCall.Name != "lookup" {
+		t.Fatalf("expected tool call name to persist, got %#v", store.last.Messages[1].Blocks[0].ToolCall)
+	}
+}
+
+func TestServiceRespondMergesToolResultFollowUpWithPreviousToolCall(t *testing.T) {
+	store := newRecordingStore()
+	store.records["resp_prev"] = conversation.Record{
+		ResponseID: "resp_prev",
+		ModelID:    "old-model",
+		Messages: []conversation.Message{
+			textMessage("user", "use a tool"),
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_1",
+							Name:      "lookup",
+							Arguments: `{"q":"weather"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "next",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "thanks"},
+		},
+	}}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "model",
+		PreviousResponseID: "resp_prev",
+		Input: []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "function_call_output",
+						"call_id": "call_1",
+						"output": map[string]any{
+							"answer": "sunny",
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(client.lastRequest.Messages) != 3 {
+		t.Fatalf("expected previous turns plus tool result, got %#v", client.lastRequest.Messages)
+	}
+	last := client.lastRequest.Messages[2]
+	if last.Role != "user" || len(last.Blocks) != 1 || last.Blocks[0].ToolResult == nil {
+		t.Fatalf("expected merged user tool result block, got %#v", last)
+	}
+	if last.Blocks[0].ToolResult.CallID != "call_1" {
+		t.Fatalf("expected merged tool result call id, got %#v", last.Blocks[0].ToolResult)
+	}
+	output, ok := last.Blocks[0].ToolResult.Output.(map[string]any)
+	if !ok || output["answer"] != "sunny" {
+		t.Fatalf("expected merged tool result payload, got %#v", last.Blocks[0].ToolResult.Output)
 	}
 }
 
@@ -197,10 +342,15 @@ func TestServiceRespondUsesIncomingModelForContinuation(t *testing.T) {
 		ResponseID: "resp_prev",
 		ModelID:    "old-model",
 		Messages: []conversation.Message{
-			{Role: "user", Text: "hi"},
+			textMessage("user", "hi"),
 		},
 	})
-	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{ResponseID: "1", Text: "ok"}}
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "1",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "ok"},
+		},
+	}}
 	svc := NewService(client, store)
 
 	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
@@ -263,7 +413,12 @@ func TestServiceRespondReturnsInvalidRequestForUnknownPreviousResponseID(t *test
 
 func TestServiceStreamPersistsOnlyAfterCleanCompletion(t *testing.T) {
 	store := newRecordingStore()
-	client := &fakeBedrock{streamResp: bedrock.ConverseResponse{ResponseID: "stream", Text: "done"}}
+	client := &fakeBedrock{streamResp: bedrock.ConverseResponse{
+		ResponseID: "stream",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "done"},
+		},
+	}}
 	svc := NewService(client, store)
 
 	err := svc.Stream(context.Background(), openai.ResponsesRequest{

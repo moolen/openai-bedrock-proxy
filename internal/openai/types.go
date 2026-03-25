@@ -123,9 +123,13 @@ type ContentItem struct {
 }
 
 type OutputItem struct {
-	Type    string        `json:"type"`
-	Role    string        `json:"role,omitempty"`
-	Content []ContentItem `json:"content,omitempty"`
+	Type      string         `json:"type"`
+	Role      string         `json:"role,omitempty"`
+	Content   []ContentItem  `json:"content,omitempty"`
+	CallID    string         `json:"call_id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Arguments string         `json:"arguments,omitempty"`
+	Action    map[string]any `json:"action,omitempty"`
 }
 
 type Response struct {
