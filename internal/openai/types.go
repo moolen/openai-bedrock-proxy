@@ -17,6 +17,7 @@ type Tool struct {
 	Function         *ToolFunction              `json:"function,omitempty"`
 	Config           map[string]json.RawMessage `json:"-"`
 	hasFunctionField bool                       `json:"-"`
+	hasNameField     bool                       `json:"-"`
 }
 
 func (t *Tool) UnmarshalJSON(data []byte) error {
@@ -31,12 +32,14 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	_, hasFunctionField := raw["function"]
+	_, hasNameField := raw["name"]
 	delete(raw, "type")
 	delete(raw, "name")
 	delete(raw, "function")
 
 	*t = Tool(decoded)
 	t.hasFunctionField = hasFunctionField
+	t.hasNameField = hasNameField
 	if len(raw) > 0 {
 		t.Config = raw
 	}

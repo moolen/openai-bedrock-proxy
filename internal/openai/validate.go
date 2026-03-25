@@ -66,6 +66,9 @@ func validateTools(tools []Tool) error {
 		if tool.Function != nil || tool.hasFunctionField {
 			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function is only allowed for function tools")
 		}
+		if tool.Name != "" || tool.hasNameField {
+			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].name is only allowed for function tools")
+		}
 	}
 	return nil
 }
@@ -74,12 +77,21 @@ func validateToolChoice(choice *ToolChoice, functionToolNames map[string]struct{
 	if choice == nil {
 		return nil
 	}
+	if choice.Mode == "" && choice.Type == "" && choice.Name == "" && choice.Function == nil {
+		return nil
+	}
 	if choice.Mode == "invalid" {
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
 	if choice.Mode == "string" {
 		if choice.Type != "auto" {
 			return NewInvalidRequestError("tool_choice is invalid")
+		}
+		if choice.Function != nil || choice.hasFunctionField {
+			return NewInvalidRequestError("tool_choice.function is not allowed for this tool_choice type")
+		}
+		if choice.Name != "" || choice.hasNameField {
+			return NewInvalidRequestError("tool_choice.name is not allowed for this tool_choice type")
 		}
 		return nil
 	}
@@ -100,6 +112,9 @@ func validateToolChoiceStruct(choice ToolChoice, functionToolNames map[string]st
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
 	if choice.Type == "function" {
+		if choice.hasFunctionField && (choice.Function == nil || choice.Function.Name == "") {
+			return NewInvalidRequestError("tool_choice.function.name is required")
+		}
 		name := choice.Name
 		if choice.Function != nil && choice.Function.Name != "" {
 			if name != "" && name != choice.Function.Name {

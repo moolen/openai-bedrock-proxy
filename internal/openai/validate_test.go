@@ -266,6 +266,30 @@ func TestValidateResponsesRequestAcceptsToolChoiceAutoWithoutMode(t *testing.T) 
 	}
 }
 
+func TestValidateResponsesRequestRejectsToolChoiceAutoWithName(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		ToolChoice: &ToolChoice{
+			Type: "auto",
+			Name: "lookup",
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.name is not allowed for this tool_choice type")
+}
+
+func TestValidateResponsesRequestRejectsToolChoiceAutoWithFunction(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		ToolChoice: &ToolChoice{
+			Type:     "auto",
+			Function: &ToolChoiceFunction{Name: "lookup"},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function is not allowed for this tool_choice type")
+}
+
 func TestValidateResponsesRequestAcceptsNamedFunctionToolChoice(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -343,6 +367,20 @@ func TestValidateResponsesRequestRejectsMalformedToolChoice(t *testing.T) {
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function.name is required")
 }
 
+func TestResponsesRequestUnmarshalRejectsFunctionToolChoiceWithNameAndNullFunction(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[{"type":"function","function":{"name":"lookup"}}],
+		"tool_choice":{"type":"function","name":"lookup","function":null}
+	}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function.name is required")
+}
+
 func TestValidateResponsesRequestRejectsUnmappableToolChoice(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -368,6 +406,17 @@ func TestResponsesRequestUnmarshalAcceptsToolChoiceAutoString(t *testing.T) {
 	}
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected decoded tool_choice auto to validate, got %v", err)
+	}
+}
+
+func TestResponsesRequestUnmarshalAcceptsNullToolChoice(t *testing.T) {
+	raw := []byte(`{"model":"model","input":"hi","tool_choice":null}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected null tool_choice to validate, got %v", err)
 	}
 }
 
@@ -437,6 +486,20 @@ func TestResponsesRequestUnmarshalRejectsAutoToolChoiceObjectWithFunction(t *tes
 	var req ResponsesRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function is not allowed for this tool_choice type")
+}
+
+func TestResponsesRequestUnmarshalRejectsToolChoiceAutoStringWithCompanionFields(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		ToolChoice: &ToolChoice{
+			Mode:     "string",
+			Type:     "auto",
+			Name:     "lookup",
+			Function: &ToolChoiceFunction{Name: "lookup"},
+		},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function is not allowed for this tool_choice type")
 }
@@ -529,6 +592,38 @@ func TestValidateResponsesRequestRejectsBuiltInToolWithFunction(t *testing.T) {
 		},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].function is only allowed for function tools")
+}
+
+func TestValidateResponsesRequestRejectsBuiltInToolWithName(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{
+				Type: "web_search_preview",
+				Name: "named",
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].name is only allowed for function tools")
+}
+
+func TestResponsesRequestUnmarshalRejectsBuiltInToolWithNameField(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{
+				"type":"web_search_preview",
+				"name":"named"
+			}
+		]
+	}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].name is only allowed for function tools")
 }
 
 func TestErrorResponseFromClassifiesWrappedInvalidRequestErrors(t *testing.T) {
