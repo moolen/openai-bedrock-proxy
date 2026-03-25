@@ -45,6 +45,9 @@ func validateChatMessage(index int, message ChatMessage) error {
 	if _, ok := supportedChatMessageRoles[message.Role]; !ok {
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].role is invalid")
 	}
+	if message.Role != "assistant" && len(message.ToolCalls) > 0 {
+		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].tool_calls is only allowed for assistant messages")
+	}
 	if message.Role == "assistant" && len(message.ToolCalls) > 0 {
 		if err := validateAssistantToolCalls(index, message.ToolCalls); err != nil {
 			return err

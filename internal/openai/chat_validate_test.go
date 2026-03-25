@@ -202,6 +202,28 @@ func TestValidateChatRequestRejectsMalformedAssistantToolCallsWithContent(t *tes
 	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "messages[0].tool_calls[0].type is invalid")
 }
 
+func TestValidateChatRequestRejectsToolCallsOnNonAssistantMessage(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "model",
+		Messages: []ChatMessage{
+			{
+				Role:    "user",
+				Content: ChatMessageText("hello"),
+				ToolCalls: []ChatToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: ChatToolCallFunction{
+							Name: "lookup",
+						},
+					},
+				},
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "messages[0].tool_calls is only allowed for assistant messages")
+}
+
 func TestValidateChatRequestAcceptsStructuredContentArray(t *testing.T) {
 	raw := []byte(`{
 		"model":"model",
