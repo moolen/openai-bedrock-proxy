@@ -48,13 +48,19 @@ func validateChatMessage(index int, message ChatMessage) error {
 
 	switch message.Content.Kind {
 	case ChatMessageContentKindUnset:
-		if allowsAssistantToolCallsWithoutContent(message) {
+		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
+			if err := validateAssistantReplayToolCallsWithoutContent(index, message); err != nil {
+				return err
+			}
 			break
 		}
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 	case ChatMessageContentKindText:
 		if message.Content.Text == "" {
-			if allowsAssistantToolCallsWithoutContent(message) {
+			if message.Role == "assistant" && len(message.ToolCalls) > 0 {
+				if err := validateAssistantReplayToolCallsWithoutContent(index, message); err != nil {
+					return err
+				}
 				break
 			}
 			return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
@@ -74,8 +80,23 @@ func validateChatMessage(index int, message ChatMessage) error {
 	return nil
 }
 
-func allowsAssistantToolCallsWithoutContent(message ChatMessage) bool {
-	return message.Role == "assistant" && len(message.ToolCalls) > 0
+func validateAssistantReplayToolCallsWithoutContent(messageIndex int, message ChatMessage) error {
+	if message.Role != "assistant" || len(message.ToolCalls) == 0 {
+		return NewInvalidRequestError("messages[" + strconv.Itoa(messageIndex) + "].content is required")
+	}
+	for toolCallIndex, toolCall := range message.ToolCalls {
+		path := "messages[" + strconv.Itoa(messageIndex) + "].tool_calls[" + strconv.Itoa(toolCallIndex) + "]"
+		if toolCall.ID == "" {
+			return NewInvalidRequestError(path + ".id is required")
+		}
+		if toolCall.Type != "function" {
+			return NewInvalidRequestError(path + ".type is invalid")
+		}
+		if toolCall.Function.Name == "" {
+			return NewInvalidRequestError(path + ".function.name is required")
+		}
+	}
+	return nil
 }
 
 func validateChatMessageParts(messageIndex int, parts []ChatMessageContentPart) error {

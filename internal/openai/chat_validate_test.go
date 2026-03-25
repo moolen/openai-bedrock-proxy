@@ -160,6 +160,26 @@ func TestValidateChatRequestAcceptsAssistantToolCallsWithoutContent(t *testing.T
 	}
 }
 
+func TestValidateChatRequestRejectsMalformedAssistantToolCallsWithoutContent(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "model",
+		Messages: []ChatMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []ChatToolCall{
+					{
+						Type: "function",
+						Function: ChatToolCallFunction{
+							Name: "lookup",
+						},
+					},
+				},
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "messages[0].tool_calls[0].id is required")
+}
+
 func TestValidateChatRequestAcceptsStructuredContentArray(t *testing.T) {
 	raw := []byte(`{
 		"model":"model",
