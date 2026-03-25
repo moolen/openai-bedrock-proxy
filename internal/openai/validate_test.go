@@ -259,6 +259,23 @@ func TestValidateResponsesRequestAcceptsNamedFunctionToolChoice(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestRejectsNamedFunctionToolChoiceWithMissingTool(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
+		},
+		ToolChoice: map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "different_tool",
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function.name is not present in tools")
+}
+
 func TestValidateResponsesRequestRejectsMalformedFunctionTool(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",

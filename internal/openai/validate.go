@@ -24,13 +24,24 @@ func ValidateResponsesRequest(req ResponsesRequest) error {
 	if err := validateTools(req.Tools); err != nil {
 		return err
 	}
-	if err := validateToolChoice(req.ToolChoice); err != nil {
+	functionToolNames := collectFunctionToolNames(req.Tools)
+	if err := validateToolChoice(req.ToolChoice, functionToolNames); err != nil {
 		return err
 	}
 	if req.ParallelToolCalls != nil {
 		return NewInvalidRequestError("parallel_tool_calls is not supported")
 	}
 	return nil
+}
+
+func collectFunctionToolNames(tools []Tool) map[string]struct{} {
+	names := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if tool.Type == "function" && tool.Function != nil && tool.Function.Name != "" {
+			names[tool.Function.Name] = struct{}{}
+		}
+	}
+	return names
 }
 
 func validateTools(tools []Tool) error {
@@ -51,7 +62,7 @@ func validateTools(tools []Tool) error {
 	return nil
 }
 
-func validateToolChoice(choice any) error {
+func validateToolChoice(choice any, functionToolNames map[string]struct{}) error {
 	if choice == nil {
 		return nil
 	}
@@ -62,20 +73,20 @@ func validateToolChoice(choice any) error {
 		}
 		return nil
 	case map[string]any:
-		return validateToolChoiceMap(v)
+		return validateToolChoiceMap(v, functionToolNames)
 	case ToolChoice:
-		return validateToolChoiceStruct(v)
+		return validateToolChoiceStruct(v, functionToolNames)
 	case *ToolChoice:
 		if v == nil {
 			return nil
 		}
-		return validateToolChoiceStruct(*v)
+		return validateToolChoiceStruct(*v, functionToolNames)
 	default:
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
 }
 
-func validateToolChoiceMap(choice map[string]any) error {
+func validateToolChoiceMap(choice map[string]any, functionToolNames map[string]struct{}) error {
 	typeValue, ok := choice["type"]
 	if !ok {
 		return NewInvalidRequestError("tool_choice is invalid")
@@ -101,6 +112,9 @@ func validateToolChoiceMap(choice map[string]any) error {
 		if !ok || name == "" {
 			return NewInvalidRequestError("tool_choice.function.name is required")
 		}
+		if _, ok := functionToolNames[name]; !ok {
+			return NewInvalidRequestError("tool_choice.function.name is not present in tools")
+		}
 		return nil
 	}
 	if _, ok := supportedBuiltInToolTypes[choiceType]; ok {
@@ -109,13 +123,16 @@ func validateToolChoiceMap(choice map[string]any) error {
 	return NewInvalidRequestError("tool_choice is invalid")
 }
 
-func validateToolChoiceStruct(choice ToolChoice) error {
+func validateToolChoiceStruct(choice ToolChoice, functionToolNames map[string]struct{}) error {
 	if choice.Type == "" {
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
 	if choice.Type == "function" {
 		if choice.Function == nil || choice.Function.Name == "" {
 			return NewInvalidRequestError("tool_choice.function.name is required")
+		}
+		if _, ok := functionToolNames[choice.Function.Name]; !ok {
+			return NewInvalidRequestError("tool_choice.function.name is not present in tools")
 		}
 		return nil
 	}
