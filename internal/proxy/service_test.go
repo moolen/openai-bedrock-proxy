@@ -39,12 +39,20 @@ func (s *recordingStore) Save(record conversation.Record) {
 }
 
 type fakeBedrock struct {
-	respondResp bedrock.ConverseResponse
-	respondErr  error
-	streamResp  bedrock.ConverseResponse
-	streamErr   error
-	models      []bedrock.ModelSummary
-	modelsErr   error
+	record        bedrock.ModelRecord
+	lookupErr     error
+	chatResp      bedrock.ConverseResponse
+	chatErr       error
+	chatStream    bedrock.ChatStreamResponse
+	chatStreamErr error
+	embedResp     openai.EmbeddingsResponse
+	embedErr      error
+	respondResp   bedrock.ConverseResponse
+	respondErr    error
+	streamResp    bedrock.ConverseResponse
+	streamErr     error
+	models        []bedrock.ModelSummary
+	modelsErr     error
 
 	respondCalls int
 	streamCalls  int
@@ -71,6 +79,22 @@ func (f *fakeBedrock) StreamConversation(_ context.Context, modelID string, req 
 
 func (f *fakeBedrock) ListModels(context.Context) ([]bedrock.ModelSummary, error) {
 	return f.models, f.modelsErr
+}
+
+func (f *fakeBedrock) LookupModel(context.Context, string) (bedrock.ModelRecord, error) {
+	return f.record, f.lookupErr
+}
+
+func (f *fakeBedrock) Chat(context.Context, bedrock.ConverseRequest) (bedrock.ConverseResponse, error) {
+	return f.chatResp, f.chatErr
+}
+
+func (f *fakeBedrock) ChatStream(context.Context, bedrock.ConverseRequest) (bedrock.ChatStreamResponse, error) {
+	return f.chatStream, f.chatStreamErr
+}
+
+func (f *fakeBedrock) Embed(context.Context, openai.EmbeddingsRequest, bedrock.ModelRecord) (openai.EmbeddingsResponse, error) {
+	return f.embedResp, f.embedErr
 }
 
 func textMessage(role, text string) conversation.Message {
@@ -512,6 +536,41 @@ func TestListModelsPreservesOpenAIListShapeWhileExpandingCatalog(t *testing.T) {
 	}
 	if !seen["us.anthropic.claude-3-7-sonnet-20250219-v1:0"] {
 		t.Fatalf("expected profile-backed model id in list, got %#v", got.Data)
+	}
+}
+
+func TestServiceGetModelMapsLookupToOpenAIModel(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{
+		record: bedrock.ModelRecord{
+			ID:       "us.amazon.nova-pro-v1:0",
+			Name:     "US Nova Pro",
+			Provider: "Amazon",
+		},
+	}
+	svc := NewService(client, store)
+
+	got, err := svc.GetModel(context.Background(), "us.amazon.nova-pro-v1:0")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if got.ID != "us.amazon.nova-pro-v1:0" || got.Object != "model" || got.OwnedBy != "Amazon" {
+		t.Fatalf("unexpected model payload: %#v", got)
+	}
+}
+
+func TestServiceGetModelConvertsUnknownModelToNotFound(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{lookupErr: openai.NewInvalidRequestError("model is not available in Bedrock catalog")}
+	svc := NewService(client, store)
+
+	_, err := svc.GetModel(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var notFound interface{ NotFound() bool }
+	if !errors.As(err, &notFound) || !notFound.NotFound() {
+		t.Fatalf("expected not found error, got %T", err)
 	}
 }
 

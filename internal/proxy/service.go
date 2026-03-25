@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -15,6 +16,10 @@ type BedrockConversation interface {
 	RespondConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (bedrock.ConverseResponse, error)
 	StreamConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64, w http.ResponseWriter) (bedrock.ConverseResponse, error)
 	ListModels(context.Context) ([]bedrock.ModelSummary, error)
+	LookupModel(context.Context, string) (bedrock.ModelRecord, error)
+	Chat(context.Context, bedrock.ConverseRequest) (bedrock.ConverseResponse, error)
+	ChatStream(context.Context, bedrock.ConverseRequest) (bedrock.ChatStreamResponse, error)
+	Embed(context.Context, openai.EmbeddingsRequest, bedrock.ModelRecord) (openai.EmbeddingsResponse, error)
 }
 
 type Service struct {
@@ -206,6 +211,41 @@ func (s *Service) ListModels(ctx context.Context) (openai.ModelsList, error) {
 		Object: "list",
 		Data:   data,
 	}, nil
+}
+
+func (s *Service) GetModel(ctx context.Context, id string) (openai.Model, error) {
+	record, err := s.client.LookupModel(ctx, id)
+	if err != nil {
+		var invalidRequest openai.InvalidRequestError
+		if errors.As(err, &invalidRequest) {
+			return openai.Model{}, openai.NewNotFoundError("model not found")
+		}
+		return openai.Model{}, err
+	}
+
+	ownedBy := record.Provider
+	if ownedBy == "" {
+		ownedBy = "bedrock"
+	}
+
+	return openai.Model{
+		ID:      record.ID,
+		Object:  "model",
+		OwnedBy: ownedBy,
+		Name:    record.Name,
+	}, nil
+}
+
+func (s *Service) CompleteChat(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	return NewChatService(s.client).Complete(ctx, req)
+}
+
+func (s *Service) StreamChat(ctx context.Context, req openai.ChatCompletionRequest, w http.ResponseWriter) error {
+	return NewChatService(s.client).Stream(ctx, req, w)
+}
+
+func (s *Service) Embed(ctx context.Context, req openai.EmbeddingsRequest) (openai.EmbeddingsResponse, error) {
+	return NewEmbeddingsService(s.client).Create(ctx, req)
 }
 
 func (s *Service) loadPrevious(previousResponseID string) (conversation.Record, error) {

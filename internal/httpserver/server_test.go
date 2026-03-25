@@ -239,15 +239,137 @@ func TestResponsesHandlerSerializesToolCallOutputs(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsHandlerReturnsJSON(t *testing.T) {
+	svc := &fakeService{
+		chatResponse: openai.ChatCompletionResponse{
+			ID:     "chatcmpl_123",
+			Object: "chat.completion",
+			Model:  "model",
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatMessage{Role: "assistant", Content: openai.ChatMessageText("hello")},
+			}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"chat.completion"`) {
+		t.Fatalf("expected chat completion payload, got %s", rec.Body.String())
+	}
+}
+
+func TestChatCompletionsHandlerStreamsSSEWhenRequested(t *testing.T) {
+	svc := &fakeService{chatStreamBody: "data: {\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`))
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("expected SSE content type, got %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Fatalf("expected stream terminator, got %s", rec.Body.String())
+	}
+}
+
+func TestEmbeddingsHandlerReturnsJSON(t *testing.T) {
+	svc := &fakeService{
+		embeddingsResponse: openai.EmbeddingsResponse{
+			Object: "list",
+			Model:  "model",
+			Data: []openai.Embedding{
+				{Object: "embedding", Index: 0, Embedding: []float64{0.1, 0.2}},
+			},
+			Usage: openai.EmbeddingsUsage{PromptTokens: 1, TotalTokens: 1},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"model","input":"hi"}`))
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"list"`) {
+		t.Fatalf("expected embeddings payload, got %s", rec.Body.String())
+	}
+}
+
+func TestModelByIDHandlerReturns404ForUnknownModel(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/missing", nil)
+	rec := httptest.NewRecorder()
+
+	NewServer(&fakeService{lookupModelErr: openai.NewNotFoundError("model not found")}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestModelByIDHandlerReturnsModelPayloadOnSuccess(t *testing.T) {
+	svc := &fakeService{
+		modelLookup: openai.Model{
+			ID:      "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+			Object:  "model",
+			OwnedBy: "Anthropic",
+			Name:    "Claude 3.7 Sonnet",
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/us.anthropic.claude-3-7-sonnet-20250219-v1:0", nil)
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"model"`) || !strings.Contains(rec.Body.String(), `"id":"us.anthropic.claude-3-7-sonnet-20250219-v1:0"`) {
+		t.Fatalf("unexpected model payload: %s", rec.Body.String())
+	}
+}
+
+func TestHealthHandlerReturnsOK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	NewServer(&fakeService{}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "\"status\":\"ok\"") {
+		t.Fatalf("unexpected health response: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 type fakeService struct {
-	response    openai.Response
-	models      openai.ModelsList
-	err         error
-	modelsErr   error
-	calls       int
-	lastRequest openai.ResponsesRequest
-	streamErr   error
-	streamBody  string
+	response           openai.Response
+	models             openai.ModelsList
+	modelLookup        openai.Model
+	chatResponse       openai.ChatCompletionResponse
+	embeddingsResponse openai.EmbeddingsResponse
+	err                error
+	modelsErr          error
+	lookupModelErr     error
+	chatErr            error
+	embeddingsErr      error
+	calls              int
+	chatCalls          int
+	embedCalls         int
+	lastRequest        openai.ResponsesRequest
+	lastChatRequest    openai.ChatCompletionRequest
+	lastEmbedRequest   openai.EmbeddingsRequest
+	streamErr          error
+	chatStreamErr      error
+	streamBody         string
+	chatStreamBody     string
 }
 
 func (s *fakeService) Respond(_ context.Context, req openai.ResponsesRequest) (openai.Response, error) {
@@ -260,6 +382,22 @@ func (s *fakeService) ListModels(_ context.Context) (openai.ModelsList, error) {
 	return s.models, s.modelsErr
 }
 
+func (s *fakeService) GetModel(_ context.Context, _ string) (openai.Model, error) {
+	return s.modelLookup, s.lookupModelErr
+}
+
+func (s *fakeService) CompleteChat(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	s.chatCalls++
+	s.lastChatRequest = req
+	return s.chatResponse, s.chatErr
+}
+
+func (s *fakeService) Embed(_ context.Context, req openai.EmbeddingsRequest) (openai.EmbeddingsResponse, error) {
+	s.embedCalls++
+	s.lastEmbedRequest = req
+	return s.embeddingsResponse, s.embeddingsErr
+}
+
 func (s *fakeService) Stream(_ context.Context, req openai.ResponsesRequest, w http.ResponseWriter) error {
 	s.calls++
 	s.lastRequest = req
@@ -269,6 +407,17 @@ func (s *fakeService) Stream(_ context.Context, req openai.ResponsesRequest, w h
 		}
 	}
 	return s.streamErr
+}
+
+func (s *fakeService) StreamChat(_ context.Context, req openai.ChatCompletionRequest, w http.ResponseWriter) error {
+	s.chatCalls++
+	s.lastChatRequest = req
+	if s.chatStreamBody != "" {
+		if _, err := w.Write([]byte(s.chatStreamBody)); err != nil {
+			return err
+		}
+	}
+	return s.chatStreamErr
 }
 
 type fakeAPIError struct {
@@ -387,6 +536,22 @@ func (f *fakeBedrockProxy) StreamConversation(context.Context, string, conversat
 
 func (f *fakeBedrockProxy) ListModels(context.Context) ([]bedrock.ModelSummary, error) {
 	return nil, nil
+}
+
+func (f *fakeBedrockProxy) LookupModel(context.Context, string) (bedrock.ModelRecord, error) {
+	return bedrock.ModelRecord{}, nil
+}
+
+func (f *fakeBedrockProxy) Chat(context.Context, bedrock.ConverseRequest) (bedrock.ConverseResponse, error) {
+	return bedrock.ConverseResponse{}, nil
+}
+
+func (f *fakeBedrockProxy) ChatStream(context.Context, bedrock.ConverseRequest) (bedrock.ChatStreamResponse, error) {
+	return bedrock.ChatStreamResponse{}, nil
+}
+
+func (f *fakeBedrockProxy) Embed(context.Context, openai.EmbeddingsRequest, bedrock.ModelRecord) (openai.EmbeddingsResponse, error) {
+	return openai.EmbeddingsResponse{}, nil
 }
 
 func encodeZstd(t *testing.T, payload string) []byte {

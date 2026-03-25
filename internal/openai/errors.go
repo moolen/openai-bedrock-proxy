@@ -23,6 +23,22 @@ func (e InvalidRequestError) Error() string {
 	return e.Message
 }
 
+type NotFoundError struct {
+	Message string
+}
+
+func NewNotFoundError(message string) NotFoundError {
+	return NotFoundError{Message: message}
+}
+
+func (e NotFoundError) Error() string {
+	return e.Message
+}
+
+func (e NotFoundError) NotFound() bool {
+	return true
+}
+
 func ErrorResponseFrom(err error) ErrorResponse {
 	if err == nil {
 		return ErrorResponse{
@@ -39,6 +55,16 @@ func ErrorResponseFrom(err error) ErrorResponse {
 			Error: ErrorBody{
 				Message: invalidRequest.Message,
 				Type:    "invalid_request_error",
+			},
+		}
+	}
+
+	var notFound NotFoundError
+	if errors.As(err, &notFound) {
+		return ErrorResponse{
+			Error: ErrorBody{
+				Message: notFound.Message,
+				Type:    "not_found_error",
 			},
 		}
 	}

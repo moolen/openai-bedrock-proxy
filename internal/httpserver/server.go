@@ -23,16 +23,27 @@ import (
 type Service interface {
 	Respond(context.Context, openai.ResponsesRequest) (openai.Response, error)
 	ListModels(context.Context) (openai.ModelsList, error)
+	GetModel(context.Context, string) (openai.Model, error)
+	CompleteChat(context.Context, openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
+	Embed(context.Context, openai.EmbeddingsRequest) (openai.EmbeddingsResponse, error)
 }
 
 type StreamingService interface {
 	Stream(context.Context, openai.ResponsesRequest, http.ResponseWriter) error
 }
 
+type ChatStreamingService interface {
+	StreamChat(context.Context, openai.ChatCompletionRequest, http.ResponseWriter) error
+}
+
 func NewServer(svc Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", handleResponses(svc))
+	mux.HandleFunc("POST /v1/chat/completions", handleChatCompletions(svc))
+	mux.HandleFunc("POST /v1/embeddings", handleEmbeddings(svc))
 	mux.HandleFunc("GET /v1/models", handleModels(svc))
+	mux.HandleFunc("GET /v1/models/{id}", handleModelByID(svc))
+	mux.HandleFunc("GET /health", handleHealth())
 	return mux
 }
 
@@ -186,6 +197,105 @@ func handleModels(svc Service) http.HandlerFunc {
 	}
 }
 
+func handleModelByID(svc Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		model, err := svc.GetModel(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(w, statusCodeFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, model)
+	}
+}
+
+func handleChatCompletions(svc Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tw := &trackingResponseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+
+		body, err := decodedRequestBody(r)
+		if err != nil {
+			status := http.StatusBadRequest
+			var unsupported unsupportedContentEncodingError
+			if errors.As(err, &unsupported) {
+				status = http.StatusUnsupportedMediaType
+			}
+			writeError(tw, status, openai.NewInvalidRequestError(err.Error()))
+			return
+		}
+		defer body.Close()
+
+		var req openai.ChatCompletionRequest
+		if err := json.NewDecoder(body).Decode(&req); err != nil {
+			writeError(tw, http.StatusBadRequest, openai.NewInvalidRequestError(err.Error()))
+			return
+		}
+
+		if req.Stream {
+			streamSvc, ok := svc.(ChatStreamingService)
+			if !ok {
+				writeError(tw, http.StatusNotImplemented, openai.NewInvalidRequestError("streaming is not supported"))
+				return
+			}
+
+			tw.Header().Set("Content-Type", "text/event-stream")
+			tw.Header().Set("Cache-Control", "no-cache")
+			tw.Header().Set("Connection", "keep-alive")
+			if err := streamSvc.StreamChat(r.Context(), req, tw); err != nil {
+				if !tw.started {
+					writeError(tw, statusCodeFor(err), err)
+				}
+				return
+			}
+			return
+		}
+
+		resp, err := svc.CompleteChat(r.Context(), req)
+		if err != nil {
+			writeError(tw, statusCodeFor(err), err)
+			return
+		}
+		writeJSON(tw, http.StatusOK, resp)
+	}
+}
+
+func handleEmbeddings(svc Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodedRequestBody(r)
+		if err != nil {
+			status := http.StatusBadRequest
+			var unsupported unsupportedContentEncodingError
+			if errors.As(err, &unsupported) {
+				status = http.StatusUnsupportedMediaType
+			}
+			writeError(w, status, openai.NewInvalidRequestError(err.Error()))
+			return
+		}
+		defer body.Close()
+
+		var req openai.EmbeddingsRequest
+		if err := json.NewDecoder(body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, openai.NewInvalidRequestError(err.Error()))
+			return
+		}
+
+		resp, err := svc.Embed(r.Context(), req)
+		if err != nil {
+			writeError(w, statusCodeFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func handleHealth() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -197,6 +307,10 @@ func writeError(w http.ResponseWriter, status int, err error) {
 }
 
 func statusCodeFor(err error) int {
+	var notFound interface{ NotFound() bool }
+	if errors.As(err, &notFound) && notFound.NotFound() {
+		return http.StatusNotFound
+	}
 	var invalidRequest openai.InvalidRequestError
 	if errors.As(err, &invalidRequest) {
 		return http.StatusBadRequest
