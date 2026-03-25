@@ -188,6 +188,7 @@ func (c *Client) RespondConversation(ctx context.Context, modelID string, req co
 		ResponseID: responseIDFromMetadata(resp),
 		Output:     extractOutput(resp),
 		StopReason: string(resp.StopReason),
+		Usage:      usageFromMetadata(resp.Usage),
 	}
 	logger.Info("bedrock converse completed", "response_id", result.ResponseID)
 	logger.Debug("bedrock converse response output",
@@ -216,6 +217,7 @@ func (c *Client) Chat(ctx context.Context, req ConverseRequest) (ConverseRespons
 		ResponseID: responseIDFromMetadata(resp),
 		Output:     extractChatOutput(resp),
 		StopReason: string(resp.StopReason),
+		Usage:      usageFromMetadata(resp.Usage),
 	}
 	logger.Info("bedrock chat converse completed", "response_id", result.ResponseID, "stop_reason", result.StopReason)
 	logger.Debug("bedrock chat converse response output",
@@ -298,11 +300,12 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 	defer stream.Close()
 
 	logger.Info("bedrock stream started")
-	text, stopReason, err := processStream(stream, w, logger)
+	text, stopReason, usage, err := processStream(stream, w, logger)
 	result := ConverseResponse{
 		ResponseID: responseIDFromStreamMetadata(resp),
 		Output:     textOutputBlocks(text),
 		StopReason: stopReason,
+		Usage:      usage,
 	}
 	if err != nil {
 		logger.Error("bedrock stream processing failed",
@@ -628,9 +631,10 @@ func defaultStreamAdapter(resp *bedrockruntime.ConverseStreamOutput) (streamEven
 	return stream, nil
 }
 
-func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logger) (string, string, error) {
+func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logger) (string, string, *Usage, error) {
 	var accumulator TextAccumulator
 	stopReason := ""
+	var usage *Usage
 
 	for event := range stream.Events() {
 		switch typed := event.(type) {
@@ -645,7 +649,7 @@ func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logg
 				"delta": textDelta.Value,
 			}); err != nil {
 				logger.Error("failed to write text delta event", "error", err)
-				return "", "", err
+				return "", "", nil, err
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
 			stopReason = string(typed.Value.StopReason)
@@ -654,12 +658,14 @@ func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logg
 				"status": stopReason,
 			}); err != nil {
 				logger.Error("failed to write response completed event", "error", err)
-				return "", "", err
+				return "", "", nil, err
 			}
+		case *bedrocktypes.ConverseStreamOutputMemberMetadata:
+			usage = usageFromMetadata(typed.Value.Usage)
 		}
 	}
 
-	return accumulator.Text(), stopReason, stream.Err()
+	return accumulator.Text(), stopReason, usage, stream.Err()
 }
 
 func textOutputBlocks(text string) []OutputBlock {

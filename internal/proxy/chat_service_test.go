@@ -56,6 +56,11 @@ func TestChatServiceCompleteTranslatesRequestAndResponse(t *testing.T) {
 				{Type: bedrock.OutputBlockTypeText, Text: "hello"},
 			},
 			StopReason: "end_turn",
+			Usage: &bedrock.Usage{
+				PromptTokens:     11,
+				CompletionTokens: 5,
+				TotalTokens:      16,
+			},
 		},
 	}
 	service := NewChatService(client)
@@ -80,6 +85,9 @@ func TestChatServiceCompleteTranslatesRequestAndResponse(t *testing.T) {
 	}
 	if len(got.Choices) != 1 || got.Choices[0].Message.Content.Text != "hello" {
 		t.Fatalf("expected translated chat response, got %#v", got)
+	}
+	if got.Usage == nil || got.Usage.PromptTokens != 11 || got.Usage.CompletionTokens != 5 || got.Usage.TotalTokens != 16 {
+		t.Fatalf("expected chat usage to be returned, got %#v", got.Usage)
 	}
 }
 

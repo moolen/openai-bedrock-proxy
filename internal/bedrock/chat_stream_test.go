@@ -18,9 +18,12 @@ func TestWriteChatStreamEmitsTextChunksAndDone(t *testing.T) {
 	)
 	var buf bytes.Buffer
 
-	err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", true, &buf)
+	usage, err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", true, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage == nil || usage.TotalTokens != 12 {
+		t.Fatalf("expected returned usage, got %#v", usage)
 	}
 
 	got := buf.String()
@@ -45,7 +48,7 @@ func TestWriteChatStreamEmitsReasoningDeltaSeparately(t *testing.T) {
 	)
 	var buf bytes.Buffer
 
-	err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
+	_, err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,9 +66,12 @@ func TestWriteChatStreamEmitsToolCallAndUsageChunks(t *testing.T) {
 	)
 	var buf bytes.Buffer
 
-	err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", true, &buf)
+	usage, err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", true, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage == nil || usage.TotalTokens != 12 {
+		t.Fatalf("expected returned usage, got %#v", usage)
 	}
 
 	got := buf.String()
@@ -97,9 +103,12 @@ func TestWriteChatStreamSkipsUsageChunkWhenDisabled(t *testing.T) {
 	)
 	var buf bytes.Buffer
 
-	err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
+	usage, err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage != nil {
+		t.Fatalf("expected usage to be omitted when disabled, got %#v", usage)
 	}
 	if strings.Contains(buf.String(), "\"usage\":") {
 		t.Fatalf("expected usage to be omitted when disabled, got %s", buf.String())
@@ -112,7 +121,7 @@ func TestWriteChatStreamEmitsAssistantRoleBeforeStopWithoutContent(t *testing.T)
 	)
 	var buf bytes.Buffer
 
-	err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
+	_, err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -773,7 +773,7 @@ func TestClientChatStreamBuildsConverseStreamInput(t *testing.T) {
 
 func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	streamErr := errors.New("stream failure")
-	events := make(chan bedrocktypes.ConverseStreamOutput, 3)
+	events := make(chan bedrocktypes.ConverseStreamOutput, 4)
 	events <- &bedrocktypes.ConverseStreamOutputMemberContentBlockDelta{
 		Value: bedrocktypes.ContentBlockDeltaEvent{
 			ContentBlockIndex: aws.Int32(0),
@@ -788,6 +788,15 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	}
 	events <- &bedrocktypes.ConverseStreamOutputMemberMessageStop{
 		Value: bedrocktypes.MessageStopEvent{StopReason: bedrocktypes.StopReasonEndTurn},
+	}
+	events <- &bedrocktypes.ConverseStreamOutputMemberMetadata{
+		Value: bedrocktypes.ConverseStreamMetadataEvent{
+			Usage: &bedrocktypes.TokenUsage{
+				InputTokens:  aws.Int32(10),
+				OutputTokens: aws.Int32(2),
+				TotalTokens:  aws.Int32(12),
+			},
+		},
 	}
 	close(events)
 
@@ -816,6 +825,9 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	}
 	if resp.StopReason != string(bedrocktypes.StopReasonEndTurn) {
 		t.Fatalf("expected stop reason to map, got %q", resp.StopReason)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 10 || resp.Usage.CompletionTokens != 2 || resp.Usage.TotalTokens != 12 {
+		t.Fatalf("expected usage to be captured from metadata, got %#v", resp.Usage)
 	}
 	if resp.ResponseID == "" {
 		t.Fatalf("expected response id to be set, got %q", resp.ResponseID)
@@ -1100,6 +1112,11 @@ func TestClientChatBuildsConverseInputAndParsesReasoningBlocks(t *testing.T) {
 				},
 			},
 			StopReason: bedrocktypes.StopReasonEndTurn,
+			Usage: &bedrocktypes.TokenUsage{
+				InputTokens:  aws.Int32(7),
+				OutputTokens: aws.Int32(3),
+				TotalTokens:  aws.Int32(10),
+			},
 		},
 	}
 	client := &Client{runtime: runtime}
@@ -1136,6 +1153,9 @@ func TestClientChatBuildsConverseInputAndParsesReasoningBlocks(t *testing.T) {
 	}
 	if resp.StopReason != string(bedrocktypes.StopReasonEndTurn) {
 		t.Fatalf("expected stop reason to map, got %#v", resp)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 7 || resp.Usage.CompletionTokens != 3 || resp.Usage.TotalTokens != 10 {
+		t.Fatalf("expected usage to be captured, got %#v", resp.Usage)
 	}
 }
 

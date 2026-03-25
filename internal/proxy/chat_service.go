@@ -65,7 +65,8 @@ func (s *ChatService) Stream(ctx context.Context, req openai.ChatCompletionReque
 		return err
 	}
 
-	return bedrock.WriteChatCompletionsStream(resp.Stream, resp.ResponseID, req.Model, includeUsage(req), w)
+	_, err = bedrock.WriteChatCompletionsStream(resp.Stream, resp.ResponseID, req.Model, includeUsage(req), w)
+	return err
 }
 
 func includeUsage(req openai.ChatCompletionRequest) bool {

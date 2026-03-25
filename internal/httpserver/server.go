@@ -18,6 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	applog "github.com/moolen/openai-bedrock-proxy/internal/logging"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
+	"github.com/moolen/openai-bedrock-proxy/internal/session"
 )
 
 type Service interface {
@@ -36,6 +37,11 @@ type ChatStreamingService interface {
 	StreamChat(context.Context, openai.ChatCompletionRequest, http.ResponseWriter) error
 }
 
+type UsageService interface {
+	GetUsage(context.Context) (openai.UsageSummary, error)
+	GetSessionUsage(context.Context, string) (openai.UsageSession, error)
+}
+
 func NewServer(svc Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", handleResponses(svc))
@@ -43,6 +49,8 @@ func NewServer(svc Service) http.Handler {
 	mux.HandleFunc("POST /v1/embeddings", handleEmbeddings(svc))
 	mux.HandleFunc("GET /v1/models", handleModels(svc))
 	mux.HandleFunc("GET /v1/models/{id}", handleModelByID(svc))
+	mux.HandleFunc("GET /v1/usage", handleUsage(svc))
+	mux.HandleFunc("GET /v1/usage/{session_id}", handleUsageSession(svc))
 	mux.HandleFunc("GET /health", handleHealth())
 	return mux
 }
@@ -61,7 +69,7 @@ func handleResponses(svc Service) http.HandlerFunc {
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 		}
-		r = r.WithContext(applog.WithLogger(r.Context(), logger))
+		r = r.WithContext(withRequestContext(r.Context(), logger, r))
 
 		logger.Info("received responses request")
 		defer func() {
@@ -214,6 +222,7 @@ func handleChatCompletions(svc Service) http.HandlerFunc {
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 		}
+		r = r.WithContext(withSessionContext(r.Context(), r))
 
 		body, err := decodedRequestBody(r)
 		if err != nil {
@@ -263,6 +272,8 @@ func handleChatCompletions(svc Service) http.HandlerFunc {
 
 func handleEmbeddings(svc Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(withSessionContext(r.Context(), r))
+
 		body, err := decodedRequestBody(r)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -293,6 +304,38 @@ func handleEmbeddings(svc Service) http.HandlerFunc {
 func handleHealth() http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func handleUsage(svc Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usageSvc, ok := svc.(UsageService)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, openai.NewInvalidRequestError("usage tracking is not supported"))
+			return
+		}
+		resp, err := usageSvc.GetUsage(r.Context())
+		if err != nil {
+			writeError(w, statusCodeFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func handleUsageSession(svc Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usageSvc, ok := svc.(UsageService)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, openai.NewInvalidRequestError("usage tracking is not supported"))
+			return
+		}
+		resp, err := usageSvc.GetSessionUsage(r.Context(), r.PathValue("session_id"))
+		if err != nil {
+			writeError(w, statusCodeFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -441,4 +484,16 @@ func newRequestID() string {
 		return "local"
 	}
 	return fmt.Sprintf("%x", buf[:])
+}
+
+func withRequestContext(ctx context.Context, logger *slog.Logger, r *http.Request) context.Context {
+	ctx = applog.WithLogger(ctx, logger)
+	return withSessionContext(ctx, r)
+}
+
+func withSessionContext(ctx context.Context, r *http.Request) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return session.WithID(ctx, r.Header.Get("X-Session-ID"))
 }

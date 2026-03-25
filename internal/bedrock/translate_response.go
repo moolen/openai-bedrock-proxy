@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	OutputBlockTypeText     = "text"
-	OutputBlockTypeToolCall = "tool_call"
+	OutputBlockTypeText      = "text"
+	OutputBlockTypeToolCall  = "tool_call"
 	OutputBlockTypeReasoning = "reasoning"
 )
 
@@ -17,6 +17,12 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments string
+}
+
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 type OutputBlock struct {
@@ -29,6 +35,7 @@ type ConverseResponse struct {
 	ResponseID string
 	Output     []OutputBlock
 	StopReason string
+	Usage      *Usage
 }
 
 type TextAccumulator struct {

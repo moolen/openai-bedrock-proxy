@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/moolen/openai-bedrock-proxy/internal/bedrock"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
+	"github.com/moolen/openai-bedrock-proxy/internal/session"
 )
 
 type recordingStore struct {
@@ -474,6 +476,146 @@ func TestServiceStreamDoesNotPersistFailedStream(t *testing.T) {
 	}
 	if store.saved != 0 {
 		t.Fatalf("expected no saved record, got %d", store.saved)
+	}
+}
+
+func TestServiceRespondAggregatesOverallAndSessionUsage(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{
+		respondResp: bedrock.ConverseResponse{
+			ResponseID: "first",
+			Output: []bedrock.OutputBlock{
+				{Type: bedrock.OutputBlockTypeText, Text: "hello"},
+			},
+			Usage: &bedrock.Usage{
+				PromptTokens:     10,
+				CompletionTokens: 2,
+				TotalTokens:      12,
+			},
+		},
+	}
+	svc := NewService(client, store)
+
+	firstResp, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model: "model",
+		Input: "hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected first response error: %v", err)
+	}
+
+	client.respondResp = bedrock.ConverseResponse{
+		ResponseID: "second",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "again"},
+		},
+		Usage: &bedrock.Usage{
+			PromptTokens:     3,
+			CompletionTokens: 1,
+			TotalTokens:      4,
+		},
+	}
+
+	_, err = svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "model",
+		Input:              "again",
+		PreviousResponseID: firstResp.ID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected second response error: %v", err)
+	}
+
+	overall, err := svc.GetUsage(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected overall usage error: %v", err)
+	}
+	if overall.Totals.Requests != 2 || overall.Totals.PromptTokens != 13 || overall.Totals.CompletionTokens != 3 || overall.Totals.TotalTokens != 16 {
+		t.Fatalf("unexpected overall usage totals: %#v", overall)
+	}
+
+	perSession, err := svc.GetSessionUsage(context.Background(), firstResp.ID)
+	if err != nil {
+		t.Fatalf("unexpected session usage error: %v", err)
+	}
+	if perSession.SessionID != firstResp.ID {
+		t.Fatalf("expected root response id session, got %#v", perSession)
+	}
+	if perSession.Totals.Requests != 2 || perSession.Totals.TotalTokens != 16 {
+		t.Fatalf("unexpected session usage totals: %#v", perSession)
+	}
+	if store.last.SessionID != firstResp.ID {
+		t.Fatalf("expected continuation snapshot to retain session id %q, got %#v", firstResp.ID, store.last)
+	}
+}
+
+func TestServiceStreamChatAggregatesUsageForExplicitSession(t *testing.T) {
+	events := make(chan bedrocktypes.ConverseStreamOutput, 2)
+	events <- proxyTextDelta("hello")
+	events <- proxyMetadataUsage(8, 2)
+	close(events)
+
+	client := &fakeBedrock{
+		record: bedrock.ModelRecord{ID: "resolved-model"},
+		chatStream: bedrock.ChatStreamResponse{
+			ResponseID: "chat_1",
+			Stream:     &proxyFakeChatStream{events: events},
+		},
+	}
+	svc := NewService(client, newRecordingStore())
+	ctx := session.WithID(context.Background(), "sess-chat")
+
+	err := svc.StreamChat(ctx, openai.ChatCompletionRequest{
+		Model: "model",
+		Messages: []openai.ChatMessage{
+			{Role: "user", Content: openai.ChatMessageText("hi")},
+		},
+		Stream: true,
+		StreamOptions: &openai.StreamOptions{
+			IncludeUsage: true,
+		},
+	}, httptest.NewRecorder())
+	if err != nil {
+		t.Fatalf("unexpected stream chat error: %v", err)
+	}
+
+	perSession, err := svc.GetSessionUsage(context.Background(), "sess-chat")
+	if err != nil {
+		t.Fatalf("unexpected session usage error: %v", err)
+	}
+	if perSession.Totals.Requests != 1 || perSession.Totals.PromptTokens != 8 || perSession.Totals.CompletionTokens != 2 || perSession.Totals.TotalTokens != 10 {
+		t.Fatalf("unexpected session totals: %#v", perSession)
+	}
+}
+
+func TestServiceEmbedAggregatesUsageForExplicitSession(t *testing.T) {
+	client := &fakeBedrock{
+		record: bedrock.ModelRecord{ID: "model"},
+		embedResp: openai.EmbeddingsResponse{
+			Object: "list",
+			Model:  "model",
+			Usage: openai.EmbeddingsUsage{
+				PromptTokens: 4,
+				TotalTokens:  4,
+			},
+		},
+	}
+	svc := NewService(client, newRecordingStore())
+	ctx := session.WithID(context.Background(), "sess-embed")
+
+	_, err := svc.Embed(ctx, openai.EmbeddingsRequest{
+		Model: "model",
+		Input: "hi",
+	})
+	if err != nil {
+		t.Fatalf("unexpected embed error: %v", err)
+	}
+
+	perSession, err := svc.GetSessionUsage(context.Background(), "sess-embed")
+	if err != nil {
+		t.Fatalf("unexpected session usage error: %v", err)
+	}
+	if perSession.Totals.Requests != 1 || perSession.Totals.PromptTokens != 4 || perSession.Totals.CompletionTokens != 0 || perSession.Totals.TotalTokens != 4 {
+		t.Fatalf("unexpected session totals: %#v", perSession)
 	}
 }
 

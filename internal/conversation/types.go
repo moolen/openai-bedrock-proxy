@@ -57,6 +57,7 @@ type Request struct {
 
 type Record struct {
 	ResponseID string
+	SessionID  string
 	ModelID    string
 	Messages   []Message
 	CreatedAt  time.Time

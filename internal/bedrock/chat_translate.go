@@ -388,6 +388,7 @@ func TranslateChatResponse(resp ConverseResponse, model string) openai.ChatCompl
 			Message:      message,
 			FinishReason: mapChatFinishReason(resp.StopReason),
 		}},
+		Usage: chatCompletionUsage(resp.Usage),
 	}
 }
 

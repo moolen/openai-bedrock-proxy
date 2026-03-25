@@ -15,6 +15,7 @@ import (
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 	"github.com/moolen/openai-bedrock-proxy/internal/proxy"
+	"github.com/moolen/openai-bedrock-proxy/internal/session"
 )
 
 func TestResponsesHandlerIgnoresAuthorizationHeader(t *testing.T) {
@@ -305,6 +306,90 @@ func TestEmbeddingsHandlerReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsHandlerPropagatesSessionHeader(t *testing.T) {
+	svc := &fakeService{
+		chatResponse: openai.ChatCompletionResponse{
+			ID:     "chatcmpl_123",
+			Object: "chat.completion",
+			Model:  "model",
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatMessage{Role: "assistant", Content: openai.ChatMessageText("hello")},
+			}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Session-ID", "sess-123")
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if got := session.IDFromContext(svc.lastChatContext); got != "sess-123" {
+		t.Fatalf("expected session id in context, got %q", got)
+	}
+}
+
+func TestUsageHandlerReturnsOverallTotals(t *testing.T) {
+	svc := &fakeService{
+		usageSummary: openai.UsageSummary{
+			Object: "usage.summary",
+			Totals: openai.UsageTotals{
+				Requests:         3,
+				PromptTokens:     12,
+				CompletionTokens: 5,
+				TotalTokens:      17,
+			},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body openai.UsageSummary
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected usage json, got %v", err)
+	}
+	if body.Totals.Requests != 3 || body.Totals.TotalTokens != 17 {
+		t.Fatalf("unexpected usage payload: %#v", body)
+	}
+}
+
+func TestUsageSessionHandlerReturnsPerSessionTotals(t *testing.T) {
+	svc := &fakeService{
+		sessionUsage: openai.UsageSession{
+			Object:    "usage.session",
+			SessionID: "sess-123",
+			Totals: openai.UsageTotals{
+				Requests:         2,
+				PromptTokens:     9,
+				CompletionTokens: 3,
+				TotalTokens:      12,
+			},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/sess-123", nil)
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body openai.UsageSession
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected usage session json, got %v", err)
+	}
+	if body.SessionID != "sess-123" || body.Totals.TotalTokens != 12 {
+		t.Fatalf("unexpected session usage payload: %#v", body)
+	}
+}
+
 func TestModelByIDHandlerReturns404ForUnknownModel(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/models/missing", nil)
 	rec := httptest.NewRecorder()
@@ -355,17 +440,22 @@ type fakeService struct {
 	modelLookup        openai.Model
 	chatResponse       openai.ChatCompletionResponse
 	embeddingsResponse openai.EmbeddingsResponse
+	usageSummary       openai.UsageSummary
+	sessionUsage       openai.UsageSession
 	err                error
 	modelsErr          error
 	lookupModelErr     error
 	chatErr            error
 	embeddingsErr      error
+	usageErr           error
+	sessionUsageErr    error
 	calls              int
 	chatCalls          int
 	embedCalls         int
 	lastRequest        openai.ResponsesRequest
 	lastChatRequest    openai.ChatCompletionRequest
 	lastEmbedRequest   openai.EmbeddingsRequest
+	lastChatContext    context.Context
 	streamErr          error
 	chatStreamErr      error
 	streamBody         string
@@ -386,9 +476,10 @@ func (s *fakeService) GetModel(_ context.Context, _ string) (openai.Model, error
 	return s.modelLookup, s.lookupModelErr
 }
 
-func (s *fakeService) CompleteChat(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+func (s *fakeService) CompleteChat(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 	s.chatCalls++
 	s.lastChatRequest = req
+	s.lastChatContext = ctx
 	return s.chatResponse, s.chatErr
 }
 
@@ -409,15 +500,25 @@ func (s *fakeService) Stream(_ context.Context, req openai.ResponsesRequest, w h
 	return s.streamErr
 }
 
-func (s *fakeService) StreamChat(_ context.Context, req openai.ChatCompletionRequest, w http.ResponseWriter) error {
+func (s *fakeService) StreamChat(ctx context.Context, req openai.ChatCompletionRequest, w http.ResponseWriter) error {
 	s.chatCalls++
 	s.lastChatRequest = req
+	s.lastChatContext = ctx
 	if s.chatStreamBody != "" {
 		if _, err := w.Write([]byte(s.chatStreamBody)); err != nil {
 			return err
 		}
 	}
 	return s.chatStreamErr
+}
+
+func (s *fakeService) GetUsage(context.Context) (openai.UsageSummary, error) {
+	return s.usageSummary, s.usageErr
+}
+
+func (s *fakeService) GetSessionUsage(_ context.Context, sessionID string) (openai.UsageSession, error) {
+	s.sessionUsage.SessionID = sessionID
+	return s.sessionUsage, s.sessionUsageErr
 }
 
 type fakeAPIError struct {

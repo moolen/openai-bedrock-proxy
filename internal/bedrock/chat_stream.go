@@ -19,12 +19,12 @@ type chatToolUseState struct {
 	name  string
 }
 
-func WriteChatCompletionsStream(stream streamEvents, responseID string, model string, includeUsage bool, w io.Writer) error {
+func WriteChatCompletionsStream(stream streamEvents, responseID string, model string, includeUsage bool, w io.Writer) (*Usage, error) {
 	if stream == nil {
-		return errors.New("bedrock chat stream was nil")
+		return nil, errors.New("bedrock chat stream was nil")
 	}
 	if w == nil {
-		return errors.New("chat stream writer was nil")
+		return nil, errors.New("chat stream writer was nil")
 	}
 	defer stream.Close()
 
@@ -33,7 +33,7 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 	roleEmitted := false
 	toolStates := map[int32]chatToolUseState{}
 	nextToolIndex := 0
-	var usage *openai.ChatCompletionUsage
+	var usage *Usage
 
 	emitRoleChunk := func() error {
 		if roleEmitted {
@@ -67,7 +67,7 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 			}
 
 			if err := emitRoleChunk(); err != nil {
-				return err
+				return nil, err
 			}
 
 			blockIndex := aws.ToInt32(typed.Value.ContentBlockIndex)
@@ -101,11 +101,11 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 					FinishReason: nil,
 				}},
 			}); err != nil {
-				return err
+				return nil, err
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberContentBlockDelta:
 			if err := emitRoleChunk(); err != nil {
-				return err
+				return nil, err
 			}
 
 			switch delta := typed.Value.Delta.(type) {
@@ -123,7 +123,7 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 						FinishReason: nil,
 					}},
 				}); err != nil {
-					return err
+					return nil, err
 				}
 			case *bedrocktypes.ContentBlockDeltaMemberReasoningContent:
 				reasoning, ok := reasoningDeltaText(delta.Value)
@@ -143,7 +143,7 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 						FinishReason: nil,
 					}},
 				}); err != nil {
-					return err
+					return nil, err
 				}
 			case *bedrocktypes.ContentBlockDeltaMemberToolUse:
 				if typed.Value.ContentBlockIndex == nil {
@@ -176,12 +176,12 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 						FinishReason: nil,
 					}},
 				}); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
 			if err := emitRoleChunk(); err != nil {
-				return err
+				return nil, err
 			}
 			finishReason := mapChatFinishReason(string(typed.Value.StopReason))
 			if err := writeChatChunk(w, openai.ChatCompletionChunk{
@@ -195,18 +195,18 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 					FinishReason: &finishReason,
 				}},
 			}); err != nil {
-				return err
+				return nil, err
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMetadata:
 			if !includeUsage {
 				continue
 			}
-			usage = chatUsageFromMetadata(typed.Value.Usage)
+			usage = usageFromMetadata(typed.Value.Usage)
 		}
 	}
 
 	if err := stream.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
 	if includeUsage && usage != nil {
@@ -216,13 +216,13 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 			Created: created,
 			Model:   model,
 			Choices: []openai.ChatCompletionChunkChoice{},
-			Usage:   usage,
+			Usage:   chatCompletionUsage(usage),
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return writeChatDone(w)
+	return usage, writeChatDone(w)
 }
 
 func reasoningDeltaText(delta bedrocktypes.ReasoningContentBlockDelta) (string, bool) {
@@ -231,23 +231,6 @@ func reasoningDeltaText(delta bedrocktypes.ReasoningContentBlockDelta) (string, 
 		return typed.Value, true
 	default:
 		return "", false
-	}
-}
-
-func chatUsageFromMetadata(usage *bedrocktypes.TokenUsage) *openai.ChatCompletionUsage {
-	if usage == nil {
-		return nil
-	}
-	prompt := int(aws.ToInt32(usage.InputTokens))
-	completion := int(aws.ToInt32(usage.OutputTokens))
-	total := int(aws.ToInt32(usage.TotalTokens))
-	if total == 0 {
-		total = prompt + completion
-	}
-	return &openai.ChatCompletionUsage{
-		PromptTokens:     prompt,
-		CompletionTokens: completion,
-		TotalTokens:      total,
 	}
 }
 

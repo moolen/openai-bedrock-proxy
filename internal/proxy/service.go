@@ -10,6 +10,8 @@ import (
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	applog "github.com/moolen/openai-bedrock-proxy/internal/logging"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
+	"github.com/moolen/openai-bedrock-proxy/internal/session"
+	"github.com/moolen/openai-bedrock-proxy/internal/usage"
 )
 
 type BedrockConversation interface {
@@ -25,10 +27,17 @@ type BedrockConversation interface {
 type Service struct {
 	client BedrockConversation
 	store  conversation.Store
+	usage  *usage.InMemoryTracker
 }
 
+const defaultUsageSessionCapacity = 4096
+
 func NewService(client BedrockConversation, store conversation.Store) *Service {
-	return &Service{client: client, store: store}
+	return &Service{
+		client: client,
+		store:  store,
+		usage:  usage.NewInMemoryTracker(defaultUsageSessionCapacity),
+	}
 }
 
 func (s *Service) Respond(ctx context.Context, req openai.ResponsesRequest) (openai.Response, error) {
@@ -92,7 +101,11 @@ func (s *Service) Respond(ctx context.Context, req openai.ResponsesRequest) (ope
 
 	response := bedrock.TranslateResponse(resp, req.Model)
 	snapshot := appendAssistantReply(merged, resp.Output)
-	s.store.Save(conversation.RecordFromResponse(response.ID, req.Model, snapshot))
+	sessionID := s.responseSessionID(ctx, record, response.ID)
+	stored := conversation.RecordFromResponse(response.ID, req.Model, snapshot)
+	stored.SessionID = sessionID
+	s.store.Save(stored)
+	s.recordBedrockUsage(logger, sessionID, resp.Usage)
 
 	logger.Info("proxy respond completed",
 		"response_id", response.ID,
@@ -170,7 +183,11 @@ func (s *Service) Stream(ctx context.Context, req openai.ResponsesRequest, w htt
 
 	snapshot := appendAssistantReply(merged, resp.Output)
 	responseID := openAIResponseID(resp.ResponseID)
-	s.store.Save(conversation.RecordFromResponse(responseID, req.Model, snapshot))
+	sessionID := s.responseSessionID(ctx, record, responseID)
+	stored := conversation.RecordFromResponse(responseID, req.Model, snapshot)
+	stored.SessionID = sessionID
+	s.store.Save(stored)
+	s.recordBedrockUsage(logger, sessionID, resp.Usage)
 
 	logger.Info("proxy stream completed",
 		"response_id", responseID,
@@ -237,15 +254,80 @@ func (s *Service) GetModel(ctx context.Context, id string) (openai.Model, error)
 }
 
 func (s *Service) CompleteChat(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
-	return NewChatService(s.client).Complete(ctx, req)
+	resp, err := NewChatService(s.client).Complete(ctx, req)
+	if err != nil {
+		return openai.ChatCompletionResponse{}, err
+	}
+	s.recordChatUsage(proxyLogger(ctx).With("model", req.Model), session.IDFromContext(ctx), resp.Usage)
+	return resp, nil
 }
 
 func (s *Service) StreamChat(ctx context.Context, req openai.ChatCompletionRequest, w http.ResponseWriter) error {
-	return NewChatService(s.client).Stream(ctx, req, w)
+	logger := proxyLogger(ctx).With("model", req.Model)
+	if err := openai.ValidateChatCompletionRequest(req); err != nil {
+		return err
+	}
+
+	record, err := s.client.LookupModel(ctx, req.Model)
+	if err != nil {
+		return err
+	}
+
+	translated, err := bedrock.TranslateChatRequest(ctx, req, record)
+	if err != nil {
+		return err
+	}
+
+	resp, err := s.client.ChatStream(ctx, translated)
+	if err != nil {
+		return err
+	}
+
+	streamUsage, err := bedrock.WriteChatCompletionsStream(resp.Stream, resp.ResponseID, req.Model, includeUsage(req), w)
+	if err != nil {
+		return err
+	}
+	s.recordBedrockUsage(logger, session.IDFromContext(ctx), streamUsage)
+	return nil
 }
 
 func (s *Service) Embed(ctx context.Context, req openai.EmbeddingsRequest) (openai.EmbeddingsResponse, error) {
-	return NewEmbeddingsService(s.client).Create(ctx, req)
+	resp, err := NewEmbeddingsService(s.client).Create(ctx, req)
+	if err != nil {
+		return openai.EmbeddingsResponse{}, err
+	}
+	s.recordEmbeddingsUsage(proxyLogger(ctx).With("model", req.Model), session.IDFromContext(ctx), resp.Usage)
+	return resp, nil
+}
+
+func (s *Service) GetUsage(context.Context) (openai.UsageSummary, error) {
+	totals := s.usage.Overall()
+	return openai.UsageSummary{
+		Object: "usage.summary",
+		Totals: openai.UsageTotals{
+			Requests:         totals.Requests,
+			PromptTokens:     totals.PromptTokens,
+			CompletionTokens: totals.CompletionTokens,
+			TotalTokens:      totals.TotalTokens,
+		},
+	}, nil
+}
+
+func (s *Service) GetSessionUsage(_ context.Context, sessionID string) (openai.UsageSession, error) {
+	totals, ok := s.usage.Session(sessionID)
+	if !ok {
+		return openai.UsageSession{}, openai.NewNotFoundError("session not found")
+	}
+	return openai.UsageSession{
+		Object:    "usage.session",
+		SessionID: sessionID,
+		Totals: openai.UsageTotals{
+			Requests:         totals.Requests,
+			PromptTokens:     totals.PromptTokens,
+			CompletionTokens: totals.CompletionTokens,
+			TotalTokens:      totals.TotalTokens,
+		},
+	}, nil
 }
 
 func (s *Service) loadPrevious(previousResponseID string) (conversation.Record, error) {
@@ -261,6 +343,47 @@ func (s *Service) loadPrevious(previousResponseID string) (conversation.Record, 
 
 func openAIResponseID(bedrockResponseID string) string {
 	return "resp_" + bedrockResponseID
+}
+
+func (s *Service) responseSessionID(ctx context.Context, record conversation.Record, responseID string) string {
+	if sessionID := session.IDFromContext(ctx); sessionID != "" {
+		return sessionID
+	}
+	if record.SessionID != "" {
+		return record.SessionID
+	}
+	if record.ResponseID != "" {
+		return record.ResponseID
+	}
+	return responseID
+}
+
+func (s *Service) recordBedrockUsage(logger *slog.Logger, sessionID string, usage *bedrock.Usage) {
+	if usage == nil {
+		return
+	}
+	s.recordUsage(logger, sessionID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+}
+
+func (s *Service) recordChatUsage(logger *slog.Logger, sessionID string, usage *openai.ChatCompletionUsage) {
+	if usage == nil {
+		return
+	}
+	s.recordUsage(logger, sessionID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+}
+
+func (s *Service) recordEmbeddingsUsage(logger *slog.Logger, sessionID string, usage openai.EmbeddingsUsage) {
+	s.recordUsage(logger, sessionID, usage.PromptTokens, 0, usage.TotalTokens)
+}
+
+func (s *Service) recordUsage(logger *slog.Logger, sessionID string, promptTokens int, completionTokens int, totalTokens int) {
+	s.usage.Record(sessionID, promptTokens, completionTokens, totalTokens)
+	logger.Info("recorded usage",
+		"session_id", sessionID,
+		"prompt_tokens", promptTokens,
+		"completion_tokens", completionTokens,
+		"total_tokens", totalTokens,
+	)
 }
 
 func appendAssistantReply(req conversation.Request, output []bedrock.OutputBlock) conversation.Request {
