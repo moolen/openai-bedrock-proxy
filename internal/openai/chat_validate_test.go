@@ -123,6 +123,28 @@ func TestValidateChatRequestAcceptsFunctionToolChoiceShapeWithoutTools(t *testin
 	}
 }
 
+func TestValidateChatRequestAcceptsStructuredContentArray(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"messages":[
+			{
+				"role":"user",
+				"content":[
+					{"type":"text","text":"describe this"},
+					{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}}
+				]
+			}
+		]
+	}`)
+	var req ChatCompletionRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if err := ValidateChatCompletionRequest(req); err != nil {
+		t.Fatalf("expected valid request, got %v", err)
+	}
+}
+
 func TestChatMessageContentMarshalUsesOpenAIWireShape(t *testing.T) {
 	resp := ChatCompletionResponse{
 		ID:      "chatcmpl_123",
@@ -164,6 +186,60 @@ func TestChatMessageContentMarshalUsesOpenAIWireShape(t *testing.T) {
 	content, ok := message["content"].(string)
 	if !ok || content != "hello" {
 		t.Fatalf("expected content to be wire string \"hello\", got %#v", message["content"])
+	}
+}
+
+func TestChatMessageContentImagePartRoundTripPreservesWireData(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"messages":[
+			{
+				"role":"user",
+				"content":[
+					{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}}
+				]
+			}
+		]
+	}`)
+	var req ChatCompletionRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("expected json marshal to succeed, got %v", err)
+	}
+
+	var roundTripped map[string]any
+	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	messages, ok := roundTripped["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("expected one message, got %#v", roundTripped["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object message, got %#v", messages[0])
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected one content part, got %#v", message["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object part, got %#v", content[0])
+	}
+	image, ok := part["image_url"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected image_url object, got %#v", part["image_url"])
+	}
+	if image["url"] != "https://example.com/cat.png" {
+		t.Fatalf("expected image_url.url to be preserved, got %#v", image["url"])
+	}
+	if image["detail"] != "high" {
+		t.Fatalf("expected image_url.detail to be preserved, got %#v", image["detail"])
 	}
 }
 

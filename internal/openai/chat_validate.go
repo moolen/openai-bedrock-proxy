@@ -50,6 +50,10 @@ func validateChatMessage(index int, message ChatMessage) error {
 		if message.Content.Text == "" {
 			return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 		}
+	case ChatMessageContentKindParts:
+		if err := validateChatMessageParts(index, message.Content.Parts); err != nil {
+			return err
+		}
 	default:
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is invalid")
 	}
@@ -59,6 +63,44 @@ func validateChatMessage(index int, message ChatMessage) error {
 	}
 
 	return nil
+}
+
+func validateChatMessageParts(messageIndex int, parts []ChatMessageContentPart) error {
+	if len(parts) == 0 {
+		return NewInvalidRequestError("messages[" + strconv.Itoa(messageIndex) + "].content is invalid")
+	}
+	for partIndex, part := range parts {
+		if err := validateChatMessagePart(messageIndex, partIndex, part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateChatMessagePart(messageIndex int, partIndex int, part ChatMessageContentPart) error {
+	basePath := "messages[" + strconv.Itoa(messageIndex) + "].content[" + strconv.Itoa(partIndex) + "]"
+	switch part.Type {
+	case "text":
+		if part.Text == "" {
+			return NewInvalidRequestError(basePath + ".text is required")
+		}
+		return nil
+	case "image_url":
+		if part.ImageURL == nil {
+			return NewInvalidRequestError(basePath + ".image_url.url is required")
+		}
+		urlValue, ok := part.ImageURL["url"]
+		if !ok {
+			return NewInvalidRequestError(basePath + ".image_url.url is required")
+		}
+		url, ok := urlValue.(string)
+		if !ok || url == "" {
+			return NewInvalidRequestError(basePath + ".image_url.url is required")
+		}
+		return nil
+	default:
+		return NewInvalidRequestError(basePath + ".type is invalid")
+	}
 }
 
 func validateResolvedMaxTokens(req ChatCompletionRequest) error {

@@ -30,8 +30,45 @@ const (
 )
 
 type ChatMessageContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string                     `json:"type"`
+	Text     string                     `json:"text,omitempty"`
+	ImageURL map[string]any             `json:"image_url,omitempty"`
+	raw      map[string]json.RawMessage `json:"-"`
+}
+
+func (p *ChatMessageContentPart) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	p.raw = raw
+
+	if rawType, ok := raw["type"]; ok {
+		_ = json.Unmarshal(rawType, &p.Type)
+	}
+	if rawText, ok := raw["text"]; ok {
+		_ = json.Unmarshal(rawText, &p.Text)
+	}
+	if rawImageURL, ok := raw["image_url"]; ok {
+		var imageURL map[string]any
+		if err := json.Unmarshal(rawImageURL, &imageURL); err == nil {
+			p.ImageURL = imageURL
+		}
+	}
+	return nil
+}
+
+func (p ChatMessageContentPart) MarshalJSON() ([]byte, error) {
+	if p.raw != nil {
+		return json.Marshal(p.raw)
+	}
+
+	type alias ChatMessageContentPart
+	return json.Marshal(alias{
+		Type:     p.Type,
+		Text:     p.Text,
+		ImageURL: p.ImageURL,
+	})
 }
 
 type ChatMessageContent struct {
