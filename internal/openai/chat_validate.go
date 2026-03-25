@@ -27,7 +27,7 @@ func ValidateChatCompletionRequest(req ChatCompletionRequest) error {
 	if err := validateTools(req.Tools); err != nil {
 		return err
 	}
-	if err := validateChatToolChoice(req.ToolChoice, req.Tools); err != nil {
+	if err := validateChatToolChoice(req.ToolChoice); err != nil {
 		return err
 	}
 
@@ -43,13 +43,13 @@ func validateChatMessage(index int, message ChatMessage) error {
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].role is invalid")
 	}
 
-	switch content := message.Content.(type) {
-	case string:
-		if content == "" {
+	switch message.Content.Kind {
+	case ChatMessageContentKindUnset:
+		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
+	case ChatMessageContentKindText:
+		if message.Content.Text == "" {
 			return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 		}
-	case nil:
-		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 	default:
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is invalid")
 	}
@@ -82,63 +82,33 @@ func resolvedMaxTokens(req ChatCompletionRequest) *int {
 	return req.MaxTokens
 }
 
-func validateChatToolChoice(value any, tools []Tool) error {
-	if value == nil {
+func validateChatToolChoice(choice ChatToolChoice) error {
+	if choice.Kind == ChatToolChoiceKindUnset {
 		return nil
 	}
 
-	switch choice := value.(type) {
-	case string:
-		if choice == "auto" || choice == "required" {
+	switch choice.Kind {
+	case ChatToolChoiceKindString:
+		if choice.StringValue == "auto" || choice.StringValue == "required" {
 			return nil
 		}
 		return NewInvalidRequestError("tool_choice is invalid")
-	case map[string]any:
-		return validateChatToolChoiceObject(choice, tools)
+	case ChatToolChoiceKindFunction:
+		return validateChatToolChoiceObject(choice)
 	default:
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
 }
 
-func validateChatToolChoiceObject(choice map[string]any, tools []Tool) error {
-	if len(choice) != 2 {
+func validateChatToolChoiceObject(choice ChatToolChoice) error {
+	if choice.FunctionValue == nil {
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
-
-	typeValue, ok := choice["type"]
-	if !ok {
+	if choice.FunctionValue.Type != "function" {
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
-	typeName, ok := typeValue.(string)
-	if !ok || typeName != "function" {
+	if choice.FunctionValue.Function.Name == "" {
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
-
-	functionValue, ok := choice["function"]
-	if !ok {
-		return NewInvalidRequestError("tool_choice is invalid")
-	}
-	functionChoice, ok := functionValue.(map[string]any)
-	if !ok {
-		return NewInvalidRequestError("tool_choice is invalid")
-	}
-	if len(functionChoice) != 1 {
-		return NewInvalidRequestError("tool_choice is invalid")
-	}
-
-	nameValue, ok := functionChoice["name"]
-	if !ok {
-		return NewInvalidRequestError("tool_choice.function.name is required")
-	}
-	name, ok := nameValue.(string)
-	if !ok || name == "" {
-		return NewInvalidRequestError("tool_choice.function.name is required")
-	}
-
-	functionToolNames := collectFunctionToolNames(tools)
-	if _, exists := functionToolNames[name]; !exists {
-		return NewInvalidRequestError("tool_choice.function.name is not present in tools")
-	}
-
 	return nil
 }
