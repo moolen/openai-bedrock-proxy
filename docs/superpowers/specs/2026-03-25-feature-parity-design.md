@@ -23,7 +23,8 @@ Included:
   - `extra_body`
   - prompt caching controls
 - support for foundation models, cross-region inference profiles, and application inference profiles
-- preservation of the existing `POST /v1/responses` and `GET /v1/models` behavior
+- preservation of the existing `POST /v1/responses` behavior
+- preservation of the existing `GET /v1/models` wire shape while broadening the discovered model set
 
 Excluded:
 
@@ -142,6 +143,18 @@ Supported request concepts:
 - `reasoning_effort`
 - `extra_body`
 
+Field rules:
+
+- `max_completion_tokens` takes precedence over `max_tokens` when both are present
+- the resolved completion-token budget is what gets mapped to Bedrock `maxTokens`
+- accepted `tool_choice` values are:
+  - `"auto"`
+  - `"required"`
+  - object form targeting a specific function tool:
+    - `{ "type": "function", "function": { "name": "<tool-name>" } }`
+- `tool_choice` values that cannot be represented safely in Bedrock should be rejected with `400`
+- `tool_choice` object targeting built-in synthetic tools is out of scope for Chat Completions parity in this slice and should be rejected explicitly
+
 Response behavior:
 
 - non-streaming responses return OpenAI chat completion payloads
@@ -149,6 +162,14 @@ Response behavior:
 - tool use maps to `tool_calls`
 - Bedrock finish reasons map to OpenAI finish reasons
 - usage fields are returned when available
+
+Reasoning output contract:
+
+- non-streaming chat responses expose reasoning in `choices[0].message.reasoning_content`
+- non-streaming chat responses keep `choices[0].message.content` for normal assistant-visible text only
+- streaming chat responses expose reasoning deltas in `choices[0].delta.reasoning_content`
+- streaming chat responses expose normal assistant text in `choices[0].delta.content`
+- the Chat Completions path should not inject synthetic `<think>` tags into `content`
 
 Chat requests should be stateless and request-scoped. Unlike Responses, Chat Completions should not introduce proxy-managed continuation state.
 
@@ -165,12 +186,26 @@ Initial support should cover:
 Response behavior:
 
 - return OpenAI-compatible embedding list payloads
-- support `encoding_format` values used by the AWS sample
+- support `encoding_format` values:
+  - `float` as the default
+  - `base64` when requested
 - reject model/input combinations that Bedrock does not support instead of silently coercing them
 
 ### `GET /v1/models`
 
 Upgrade the current models endpoint to return a refreshed merged catalog rather than only text foundation models.
+
+Preservation rule:
+
+- keep the existing top-level wire shape:
+  - `{ "object": "list", "data": [...] }`
+- keep existing model object fields:
+  - `id`
+  - `object`
+  - `owned_by`
+  - `name` when available
+- broaden the discovered model set without introducing a new response schema
+- use deterministic ordering so refreshed results remain testable
 
 The returned set should include:
 
@@ -185,7 +220,7 @@ Add a single-model lookup endpoint backed by the same catalog used by `GET /v1/m
 This endpoint should:
 
 - return a model object when the ID is present
-- return a client error when the model is not in the catalog
+- return `404` when the model is not in the catalog
 
 ### `GET /health`
 
@@ -238,6 +273,15 @@ Rules:
 - provider-specific Bedrock request fields should be added through a narrow translation layer rather than leaking raw OpenAI request structs into Bedrock calls
 - `extra_body` should be passed through conservatively, with local filtering for proxy-owned control keys such as prompt-caching toggles
 
+Prompt-caching request contract:
+
+- prompt-caching controls live under `extra_body.prompt_caching`
+- supported keys:
+  - `system: boolean`
+  - `messages: boolean`
+- these keys are consumed by the proxy and must not be forwarded upstream as raw Bedrock fields
+- all other `extra_body` keys remain eligible for upstream pass-through
+
 ### Reasoning
 
 Add model-aware reasoning support aligned with the AWS sample's practical behavior:
@@ -245,6 +289,13 @@ Add model-aware reasoning support aligned with the AWS sample's practical behavi
 - map `reasoning_effort` to Bedrock provider-specific request fields when the target model family supports it
 - avoid silently enabling reasoning for models where the semantics are unknown
 - expose reasoning output in the OpenAI-compatible response shape used by the selected API surface
+
+Reasoning precedence rules:
+
+- when `reasoning_effort` is present, the resolved completion-token budget comes from:
+  - `max_completion_tokens`, if present
+  - otherwise `max_tokens`
+- model-specific request shaping is allowed to drop unsupported inference fields such as `top_p` when Bedrock rejects the combination
 
 The exact mapping should be capability-driven by resolved underlying model metadata rather than hard-coded against only the presented model ID string.
 
