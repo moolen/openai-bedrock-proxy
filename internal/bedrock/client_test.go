@@ -8,6 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	bedrocksvc "github.com/aws/aws-sdk-go-v2/service/bedrock"
+	bedrockcatalogtypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
@@ -300,6 +302,49 @@ func TestClientStreamWrapperNormalizesAndStreams(t *testing.T) {
 	}
 }
 
+func TestClientListModelsUsesBedrockCatalog(t *testing.T) {
+	catalog := &fakeCatalog{
+		output: &bedrocksvc.ListFoundationModelsOutput{
+			ModelSummaries: []bedrockcatalogtypes.FoundationModelSummary{
+				{
+					ModelId:      aws.String("anthropic.claude-3-7-sonnet-20250219-v1:0"),
+					ProviderName: aws.String("Anthropic"),
+					ModelName:    aws.String("Claude 3.7 Sonnet"),
+				},
+				{
+					ModelId:      aws.String("amazon.nova-pro-v1:0"),
+					ProviderName: aws.String("Amazon"),
+					ModelName:    aws.String("Nova Pro"),
+				},
+			},
+		},
+	}
+	client := &Client{catalog: catalog}
+
+	got, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalog.lastInput == nil {
+		t.Fatal("expected list foundation models input to be captured")
+	}
+	if catalog.lastInput.ByOutputModality != bedrockcatalogtypes.ModelModalityText {
+		t.Fatalf("expected output modality filter to be text, got %q", catalog.lastInput.ByOutputModality)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(got))
+	}
+	if got[0].ID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected first model id to map, got %q", got[0].ID)
+	}
+	if got[0].Provider != "Anthropic" {
+		t.Fatalf("expected provider to map, got %q", got[0].Provider)
+	}
+	if got[0].Name != "Claude 3.7 Sonnet" {
+		t.Fatalf("expected name to map, got %q", got[0].Name)
+	}
+}
+
 type fakeRuntime struct {
 	lastConverseInput       *bedrockruntime.ConverseInput
 	converseOutput          *bedrockruntime.ConverseOutput
@@ -337,4 +382,15 @@ func (f *fakeStream) Close() error {
 
 func (f *fakeStream) Err() error {
 	return f.err
+}
+
+type fakeCatalog struct {
+	lastInput *bedrocksvc.ListFoundationModelsInput
+	output    *bedrocksvc.ListFoundationModelsOutput
+	err       error
+}
+
+func (f *fakeCatalog) ListFoundationModels(_ context.Context, input *bedrocksvc.ListFoundationModelsInput, _ ...func(*bedrocksvc.Options)) (*bedrocksvc.ListFoundationModelsOutput, error) {
+	f.lastInput = input
+	return f.output, f.err
 }

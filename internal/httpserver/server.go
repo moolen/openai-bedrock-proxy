@@ -1,22 +1,28 @@
 package httpserver
 
 import (
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aws/smithy-go"
+	"github.com/klauspost/compress/zstd"
 	applog "github.com/moolen/openai-bedrock-proxy/internal/logging"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
 type Service interface {
 	Respond(context.Context, openai.ResponsesRequest) (openai.Response, error)
+	ListModels(context.Context) (openai.ModelsList, error)
 }
 
 type StreamingService interface {
@@ -26,7 +32,7 @@ type StreamingService interface {
 func NewServer(svc Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", handleResponses(svc))
-	mux.HandleFunc("GET /v1/models", handleModels())
+	mux.HandleFunc("GET /v1/models", handleModels(svc))
 	return mux
 }
 
@@ -55,8 +61,21 @@ func handleResponses(svc Service) http.HandlerFunc {
 			)
 		}()
 
+		body, err := decodedRequestBody(r)
+		if err != nil {
+			status := http.StatusBadRequest
+			var unsupported unsupportedContentEncodingError
+			if errors.As(err, &unsupported) {
+				status = http.StatusUnsupportedMediaType
+			}
+			logger.Error("failed to decode responses request body", "error", err, "status_code", status)
+			writeError(tw, status, openai.NewInvalidRequestError(err.Error()))
+			return
+		}
+		defer body.Close()
+
 		var req openai.ResponsesRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(body).Decode(&req); err != nil {
 			logger.Error("failed to decode responses request", "error", err)
 			writeError(tw, http.StatusBadRequest, openai.NewInvalidRequestError(err.Error()))
 			return
@@ -132,7 +151,7 @@ func handleResponses(svc Service) http.HandlerFunc {
 	}
 }
 
-func handleModels() http.HandlerFunc {
+func handleModels(svc Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
 		requestID := newRequestID()
@@ -156,12 +175,14 @@ func handleModels() http.HandlerFunc {
 			)
 		}()
 
-		payload := map[string]any{
-			"object": "list",
-			"data":   []any{},
+		models, err := svc.ListModels(r.Context())
+		if err != nil {
+			logger.Error("models request failed", "error", err, "status_code", statusCodeFor(err))
+			writeError(tw, statusCodeFor(err), err)
+			return
 		}
-		logger.Debug("returning models payload", "payload", payload)
-		writeJSON(tw, http.StatusOK, payload)
+		logger.Debug("returning models payload", "payload", models)
+		writeJSON(tw, http.StatusOK, models)
 	}
 }
 
@@ -192,6 +213,90 @@ type trackingResponseWriter struct {
 	started      bool
 	statusCode   int
 	bytesWritten int
+}
+
+type unsupportedContentEncodingError struct {
+	encoding string
+}
+
+func (e unsupportedContentEncodingError) Error() string {
+	return fmt.Sprintf("unsupported content-encoding: %s", e.encoding)
+}
+
+type multiCloserReader struct {
+	io.Reader
+	closers []io.Closer
+}
+
+type noErrorCloser struct {
+	close func()
+}
+
+func (c noErrorCloser) Close() error {
+	c.close()
+	return nil
+}
+
+func (r *multiCloserReader) Close() error {
+	var closeErr error
+	for i := len(r.closers) - 1; i >= 0; i-- {
+		if err := r.closers[i].Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
+}
+
+func decodedRequestBody(r *http.Request) (io.ReadCloser, error) {
+	reader := io.Reader(r.Body)
+	closers := []io.Closer{r.Body}
+	encodings := contentEncodings(r.Header.Values("Content-Encoding"))
+
+	for i := len(encodings) - 1; i >= 0; i-- {
+		encoding := encodings[i]
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip":
+			gzipReader, err := gzip.NewReader(reader)
+			if err != nil {
+				return nil, err
+			}
+			reader = gzipReader
+			closers = append(closers, gzipReader)
+		case "deflate":
+			zlibReader, err := zlib.NewReader(reader)
+			if err != nil {
+				return nil, err
+			}
+			reader = zlibReader
+			closers = append(closers, zlibReader)
+		case "zstd":
+			zstdReader, err := zstd.NewReader(reader)
+			if err != nil {
+				return nil, err
+			}
+			reader = zstdReader
+			closers = append(closers, noErrorCloser{close: zstdReader.Close})
+		default:
+			return nil, unsupportedContentEncodingError{encoding: encoding}
+		}
+	}
+
+	return &multiCloserReader{Reader: reader, closers: closers}, nil
+}
+
+func contentEncodings(values []string) []string {
+	var encodings []string
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			encoding := strings.TrimSpace(strings.ToLower(part))
+			if encoding != "" {
+				encodings = append(encodings, encoding)
+			}
+		}
+	}
+	return encodings
 }
 
 func (w *trackingResponseWriter) WriteHeader(statusCode int) {

@@ -43,6 +43,8 @@ type fakeBedrock struct {
 	respondErr  error
 	streamResp  bedrock.ConverseResponse
 	streamErr   error
+	models      []bedrock.ModelSummary
+	modelsErr   error
 
 	respondCalls int
 	streamCalls  int
@@ -65,6 +67,10 @@ func (f *fakeBedrock) StreamConversation(_ context.Context, modelID string, req 
 		_, _ = w.Write([]byte(""))
 	}
 	return f.streamResp, f.streamErr
+}
+
+func (f *fakeBedrock) ListModels(context.Context) ([]bedrock.ModelSummary, error) {
+	return f.models, f.modelsErr
 }
 
 func TestServiceRespondUsesPreviousResponseSnapshot(t *testing.T) {
@@ -289,5 +295,36 @@ func TestServiceStreamDoesNotPersistFailedStream(t *testing.T) {
 	}
 	if store.saved != 0 {
 		t.Fatalf("expected no saved record, got %d", store.saved)
+	}
+}
+
+func TestServiceListModelsMapsBedrockModelsToOpenAIList(t *testing.T) {
+	store := newRecordingStore()
+	client := &fakeBedrock{
+		models: []bedrock.ModelSummary{
+			{ID: "anthropic.claude-3-7-sonnet-20250219-v1:0", Provider: "Anthropic"},
+			{ID: "amazon.nova-pro-v1:0", Provider: "Amazon"},
+		},
+	}
+	svc := NewService(client, store)
+
+	got, err := svc.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if got.Object != "list" {
+		t.Fatalf("expected list object, got %q", got.Object)
+	}
+	if len(got.Data) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(got.Data))
+	}
+	if got.Data[0].ID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected first model id to map, got %q", got.Data[0].ID)
+	}
+	if got.Data[0].OwnedBy != "Anthropic" {
+		t.Fatalf("expected provider to map to owned_by, got %q", got.Data[0].OwnedBy)
+	}
+	if got.Data[0].Object != "model" {
+		t.Fatalf("expected model object, got %q", got.Data[0].Object)
 	}
 }

@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/aws/smithy-go"
+	"github.com/klauspost/compress/zstd"
 	"github.com/moolen/openai-bedrock-proxy/internal/bedrock"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
@@ -37,27 +39,35 @@ func TestResponsesHandlerIgnoresAuthorizationHeader(t *testing.T) {
 }
 
 func TestModelsHandlerReturnsOpenAIListShape(t *testing.T) {
+	svc := &fakeService{
+		models: openai.ModelsList{
+			Object: "list",
+			Data: []openai.Model{
+				{ID: "anthropic.claude-3-7-sonnet-20250219-v1:0", Object: "model", OwnedBy: "bedrock"},
+			},
+		},
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 
-	NewServer(&fakeService{}).ServeHTTP(rec, req)
+	NewServer(svc).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
-	var body struct {
-		Object string `json:"object"`
-		Data   []any  `json:"data"`
-	}
+	var body openai.ModelsList
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("expected valid json response, got %v", err)
 	}
 	if body.Object != "list" {
 		t.Fatalf("expected list object, got %q", body.Object)
 	}
-	if body.Data == nil {
-		t.Fatal("expected data field to be present")
+	if len(body.Data) != 1 {
+		t.Fatalf("expected one model, got %d", len(body.Data))
+	}
+	if body.Data[0].ID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected model id to come from service, got %q", body.Data[0].ID)
 	}
 }
 
@@ -80,9 +90,52 @@ func TestResponsesHandlerRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerDecodesZstdEncodedJSON(t *testing.T) {
+	svc := &fakeService{
+		response: openai.Response{ID: "resp_1", Object: "response", Model: "model"},
+	}
+	body := encodeZstd(t, `{"model":"model","input":"hi"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Content-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if svc.calls != 1 {
+		t.Fatalf("expected service to be called once, got %d", svc.calls)
+	}
+	if svc.lastRequest.Model != "model" {
+		t.Fatalf("expected decoded model, got %q", svc.lastRequest.Model)
+	}
+}
+
+func TestResponsesHandlerRejectsUnsupportedContentEncoding(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model","input":"hi"}`))
+	req.Header.Set("Content-Encoding", "br")
+
+	NewServer(&fakeService{}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %d", rec.Code)
+	}
+	var body openai.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("expected valid error response, got %v", err)
+	}
+	if body.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected invalid request error type, got %q", body.Error.Type)
+	}
+}
+
 type fakeService struct {
 	response    openai.Response
+	models      openai.ModelsList
 	err         error
+	modelsErr   error
 	calls       int
 	lastRequest openai.ResponsesRequest
 	streamErr   error
@@ -93,6 +146,10 @@ func (s *fakeService) Respond(_ context.Context, req openai.ResponsesRequest) (o
 	s.calls++
 	s.lastRequest = req
 	return s.response, s.err
+}
+
+func (s *fakeService) ListModels(_ context.Context) (openai.ModelsList, error) {
+	return s.models, s.modelsErr
 }
 
 func (s *fakeService) Stream(_ context.Context, req openai.ResponsesRequest, w http.ResponseWriter) error {
@@ -218,4 +275,25 @@ func (f *fakeBedrockProxy) RespondConversation(context.Context, string, conversa
 
 func (f *fakeBedrockProxy) StreamConversation(context.Context, string, conversation.Request, *int, *float64, http.ResponseWriter) (bedrock.ConverseResponse, error) {
 	return bedrock.ConverseResponse{}, nil
+}
+
+func (f *fakeBedrockProxy) ListModels(context.Context) ([]bedrock.ModelSummary, error) {
+	return nil, nil
+}
+
+func encodeZstd(t *testing.T, payload string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	encoder, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("expected zstd encoder, got %v", err)
+	}
+	if _, err := encoder.Write([]byte(payload)); err != nil {
+		t.Fatalf("expected zstd write to succeed, got %v", err)
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatalf("expected zstd close to succeed, got %v", err)
+	}
+	return buf.Bytes()
 }
