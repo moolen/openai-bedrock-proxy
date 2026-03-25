@@ -45,13 +45,20 @@ type ModelSummary struct {
 	Provider string
 }
 
-type streamEvents interface {
+type StreamEvents interface {
 	Events() <-chan bedrocktypes.ConverseStreamOutput
 	Close() error
 	Err() error
 }
 
+type streamEvents = StreamEvents
+
 type streamAdapterFunc func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error)
+
+type ChatStreamResponse struct {
+	ResponseID string
+	Stream     StreamEvents
+}
 
 func NewClient(ctx context.Context, region string, loadConfig LoadConfigFunc) (*Client, error) {
 	logger := bedrockLogger(ctx).With("aws_region", region)
@@ -191,6 +198,39 @@ func (c *Client) Chat(ctx context.Context, req ConverseRequest) (ConverseRespons
 		"response_id", result.ResponseID,
 		"output", result.Output,
 	)
+	return result, nil
+}
+
+func (c *Client) ChatStream(ctx context.Context, req ConverseRequest) (ChatStreamResponse, error) {
+	logger := bedrockLogger(ctx).With("model_id", req.ModelID)
+	logger.Debug("executing bedrock chat converse stream request",
+		"system", req.System,
+		"messages", req.Messages,
+		"max_tokens", req.MaxTokens,
+		"temperature", req.Temperature,
+	)
+
+	resp, err := c.runtime.ConverseStream(ctx, toConverseStreamInput(req))
+	if err != nil {
+		logger.Error("bedrock chat converse stream failed", "error", err)
+		return ChatStreamResponse{}, err
+	}
+
+	adapter := c.streamAdapter
+	if adapter == nil {
+		adapter = defaultStreamAdapter
+	}
+	stream, err := adapter(resp)
+	if err != nil {
+		logger.Error("failed to adapt bedrock chat stream", "error", err)
+		return ChatStreamResponse{}, err
+	}
+
+	result := ChatStreamResponse{
+		ResponseID: responseIDFromStreamMetadata(resp),
+		Stream:     stream,
+	}
+	logger.Info("bedrock chat stream started", "response_id", result.ResponseID)
 	return result, nil
 }
 

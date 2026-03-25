@@ -583,6 +583,72 @@ func TestClientStreamConversationRejectsNilResponse(t *testing.T) {
 	}
 }
 
+func TestClientChatStreamRejectsNilResponse(t *testing.T) {
+	client := &Client{runtime: &fakeRuntime{}}
+	_, err := client.ChatStream(context.Background(), ConverseRequest{
+		ModelID: "model-id",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{Text: "hello"},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error when bedrock stream response is nil")
+	}
+}
+
+func TestClientChatStreamBuildsConverseStreamInput(t *testing.T) {
+	events := make(chan bedrocktypes.ConverseStreamOutput, 1)
+	events <- &bedrocktypes.ConverseStreamOutputMemberMessageStop{
+		Value: bedrocktypes.MessageStopEvent{StopReason: bedrocktypes.StopReasonEndTurn},
+	}
+	close(events)
+
+	stream := &fakeStream{events: events}
+	runtime := &fakeRuntime{converseStreamOutput: &bedrockruntime.ConverseStreamOutput{}}
+	client := &Client{
+		runtime: runtime,
+		streamAdapter: func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+			return stream, nil
+		},
+	}
+
+	resp, err := client.ChatStream(context.Background(), ConverseRequest{
+		ModelID: "model-id",
+		System:  []string{"be terse"},
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{Text: "hello"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastConverseStreamInput == nil {
+		t.Fatal("expected converse stream input to be captured")
+	}
+	if got := aws.ToString(runtime.lastConverseStreamInput.ModelId); got != "model-id" {
+		t.Fatalf("expected model id passthrough, got %q", got)
+	}
+	if len(runtime.lastConverseStreamInput.System) != 1 {
+		t.Fatalf("expected one system block, got %d", len(runtime.lastConverseStreamInput.System))
+	}
+	if resp.Stream != stream {
+		t.Fatalf("expected stream to pass through, got %#v", resp.Stream)
+	}
+	if resp.ResponseID == "" {
+		t.Fatalf("expected response id to be set, got %q", resp.ResponseID)
+	}
+}
+
 func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	streamErr := errors.New("stream failure")
 	events := make(chan bedrocktypes.ConverseStreamOutput, 3)

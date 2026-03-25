@@ -15,6 +15,7 @@ type ChatToolCallFunction struct {
 }
 
 type ChatToolCall struct {
+	Index    *int                 `json:"index,omitempty"`
 	ID       string               `json:"id,omitempty"`
 	Type     string               `json:"type,omitempty"`
 	Function ChatToolCallFunction `json:"function,omitempty"`
@@ -468,9 +469,10 @@ type ChatCompletionResponse struct {
 }
 
 type ChatCompletionChunkDelta struct {
-	Role      string         `json:"role,omitempty"`
-	Content   string         `json:"content,omitempty"`
-	ToolCalls []ChatToolCall `json:"tool_calls,omitempty"`
+	Role             string         `json:"role,omitempty"`
+	Content          string         `json:"content,omitempty"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
 }
 
 type ChatCompletionChunkChoice struct {
