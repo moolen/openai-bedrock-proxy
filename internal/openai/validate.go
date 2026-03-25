@@ -58,6 +58,9 @@ func validateTools(tools []Tool) error {
 		if _, ok := supportedBuiltInToolTypes[tool.Type]; !ok {
 			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].type is not supported")
 		}
+		if tool.Function != nil {
+			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function is only allowed for function tools")
+		}
 	}
 	return nil
 }
@@ -75,6 +78,9 @@ func validateToolChoice(choice *ToolChoice, functionToolNames map[string]struct{
 		}
 		return nil
 	}
+	if choice.Type == "auto" {
+		return nil
+	}
 	return validateToolChoiceStruct(*choice, functionToolNames)
 }
 
@@ -83,10 +89,17 @@ func validateToolChoiceStruct(choice ToolChoice, functionToolNames map[string]st
 		return NewInvalidRequestError("tool_choice is invalid")
 	}
 	if choice.Type == "function" {
-		if choice.Function == nil || choice.Function.Name == "" {
+		name := choice.Name
+		if choice.Function != nil && choice.Function.Name != "" {
+			if name != "" && name != choice.Function.Name {
+				return NewInvalidRequestError("tool_choice.function.name is invalid")
+			}
+			name = choice.Function.Name
+		}
+		if name == "" {
 			return NewInvalidRequestError("tool_choice.function.name is required")
 		}
-		if _, ok := functionToolNames[choice.Function.Name]; !ok {
+		if _, ok := functionToolNames[name]; !ok {
 			return NewInvalidRequestError("tool_choice.function.name is not present in tools")
 		}
 		return nil

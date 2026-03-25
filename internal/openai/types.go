@@ -12,9 +12,32 @@ type ToolFunction struct {
 }
 
 type Tool struct {
-	Type     string        `json:"type"`
-	Name     string        `json:"name,omitempty"`
-	Function *ToolFunction `json:"function,omitempty"`
+	Type     string                     `json:"type"`
+	Name     string                     `json:"name,omitempty"`
+	Function *ToolFunction              `json:"function,omitempty"`
+	Config   map[string]json.RawMessage `json:"-"`
+}
+
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type toolAlias Tool
+	var decoded toolAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	delete(raw, "type")
+	delete(raw, "name")
+	delete(raw, "function")
+
+	*t = Tool(decoded)
+	if len(raw) > 0 {
+		t.Config = raw
+	}
+	return nil
 }
 
 type ToolChoiceFunction struct {

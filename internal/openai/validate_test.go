@@ -243,6 +243,17 @@ func TestValidateResponsesRequestAcceptsToolChoiceAuto(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestAcceptsToolChoiceAutoWithoutMode(t *testing.T) {
+	req := ResponsesRequest{
+		Model:      "model",
+		Input:      "hi",
+		ToolChoice: &ToolChoice{Type: "auto"},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected programmatic tool_choice auto to be accepted, got %v", err)
+	}
+}
+
 func TestValidateResponsesRequestAcceptsNamedFunctionToolChoice(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -260,6 +271,23 @@ func TestValidateResponsesRequestAcceptsNamedFunctionToolChoice(t *testing.T) {
 	}
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected named function tool_choice to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsNamedFunctionToolChoiceViaTopLevelName(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
+		},
+		ToolChoice: &ToolChoice{
+			Type: "function",
+			Name: "lookup",
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected top-level name function tool_choice to be accepted, got %v", err)
 	}
 }
 
@@ -353,6 +381,28 @@ func TestResponsesRequestUnmarshalAcceptsNamedFunctionToolChoiceObject(t *testin
 	}
 }
 
+func TestResponsesRequestUnmarshalAcceptsFunctionToolChoiceObjectViaTopLevelName(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[{"type":"function","function":{"name":"lookup"}}],
+		"tool_choice":{"type":"function","name":"lookup"}
+	}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if req.ToolChoice == nil {
+		t.Fatal("expected tool_choice to be present")
+	}
+	if req.ToolChoice.Type != "function" || req.ToolChoice.Name != "lookup" {
+		t.Fatalf("unexpected tool_choice decode: %+v", req.ToolChoice)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected decoded named function tool_choice to validate, got %v", err)
+	}
+}
+
 func TestResponsesRequestUnmarshalAcceptsBuiltInToolChoiceObject(t *testing.T) {
 	raw := []byte(`{"model":"model","input":"hi","tool_choice":{"type":"web_search_preview"}}`)
 	var req ResponsesRequest
@@ -370,6 +420,35 @@ func TestResponsesRequestUnmarshalAcceptsBuiltInToolChoiceObject(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestUnmarshalPreservesBuiltInToolConfig(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{
+				"type":"web_search_preview",
+				"user_location":{"type":"approximate","country":"DE"}
+			}
+		]
+	}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("expected one tool, got %d", len(req.Tools))
+	}
+	if req.Tools[0].Config == nil {
+		t.Fatal("expected built-in tool config to be preserved")
+	}
+	if _, ok := req.Tools[0].Config["user_location"]; !ok {
+		t.Fatalf("expected user_location config key, got %#v", req.Tools[0].Config)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected decoded built-in tool with config to validate, got %v", err)
+	}
+}
+
 func TestValidateResponsesRequestRejectsUnsupportedBuiltInTool(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -379,6 +458,20 @@ func TestValidateResponsesRequestRejectsUnsupportedBuiltInTool(t *testing.T) {
 		},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].type is not supported")
+}
+
+func TestValidateResponsesRequestRejectsBuiltInToolWithFunction(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{
+				Type:     "web_search_preview",
+				Function: &ToolFunction{Name: "lookup"},
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].function is only allowed for function tools")
 }
 
 func TestErrorResponseFromClassifiesWrappedInvalidRequestErrors(t *testing.T) {
