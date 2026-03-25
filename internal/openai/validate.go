@@ -45,6 +45,7 @@ func collectFunctionToolNames(tools []Tool) map[string]struct{} {
 }
 
 func validateTools(tools []Tool) error {
+	seenFunctionNames := make(map[string]struct{}, len(tools))
 	for idx, tool := range tools {
 		if tool.Type == "" {
 			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].type is required")
@@ -53,12 +54,16 @@ func validateTools(tools []Tool) error {
 			if tool.Function == nil || tool.Function.Name == "" {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name is required")
 			}
+			if _, ok := seenFunctionNames[tool.Function.Name]; ok {
+				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name duplicates a previous tool")
+			}
+			seenFunctionNames[tool.Function.Name] = struct{}{}
 			continue
 		}
 		if _, ok := supportedBuiltInToolTypes[tool.Type]; !ok {
 			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].type is not supported")
 		}
-		if tool.Function != nil {
+		if tool.Function != nil || tool.hasFunctionField {
 			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function is only allowed for function tools")
 		}
 	}
@@ -79,6 +84,12 @@ func validateToolChoice(choice *ToolChoice, functionToolNames map[string]struct{
 		return nil
 	}
 	if choice.Type == "auto" {
+		if choice.Function != nil || choice.hasFunctionField {
+			return NewInvalidRequestError("tool_choice.function is not allowed for this tool_choice type")
+		}
+		if choice.Name != "" || choice.hasNameField {
+			return NewInvalidRequestError("tool_choice.name is not allowed for this tool_choice type")
+		}
 		return nil
 	}
 	return validateToolChoiceStruct(*choice, functionToolNames)
@@ -105,6 +116,12 @@ func validateToolChoiceStruct(choice ToolChoice, functionToolNames map[string]st
 		return nil
 	}
 	if _, ok := supportedBuiltInToolTypes[choice.Type]; ok {
+		if choice.Function != nil || choice.hasFunctionField {
+			return NewInvalidRequestError("tool_choice.function is not allowed for this tool_choice type")
+		}
+		if choice.Name != "" || choice.hasNameField {
+			return NewInvalidRequestError("tool_choice.name is not allowed for this tool_choice type")
+		}
 		return nil
 	}
 	return NewInvalidRequestError("tool_choice is invalid")

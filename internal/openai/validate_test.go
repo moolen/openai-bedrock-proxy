@@ -216,6 +216,18 @@ func TestValidateResponsesRequestAcceptsFunctionTools(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestRejectsDuplicateFunctionToolNames(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
+			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[1].function.name duplicates a previous tool")
+}
+
 func TestValidateResponsesRequestAcceptsBuiltInTools(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -420,6 +432,33 @@ func TestResponsesRequestUnmarshalAcceptsBuiltInToolChoiceObject(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestUnmarshalRejectsAutoToolChoiceObjectWithFunction(t *testing.T) {
+	raw := []byte(`{"model":"model","input":"hi","tool_choice":{"type":"auto","function":{"name":"x"}}}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function is not allowed for this tool_choice type")
+}
+
+func TestResponsesRequestUnmarshalRejectsBuiltInToolChoiceObjectWithFunction(t *testing.T) {
+	raw := []byte(`{"model":"model","input":"hi","tool_choice":{"type":"web_search_preview","function":{"name":"x"}}}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function is not allowed for this tool_choice type")
+}
+
+func TestResponsesRequestUnmarshalRejectsBuiltInToolChoiceObjectWithName(t *testing.T) {
+	raw := []byte(`{"model":"model","input":"hi","tool_choice":{"type":"web_search_preview","name":"x"}}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.name is not allowed for this tool_choice type")
+}
+
 func TestResponsesRequestUnmarshalPreservesBuiltInToolConfig(t *testing.T) {
 	raw := []byte(`{
 		"model":"model",
@@ -447,6 +486,24 @@ func TestResponsesRequestUnmarshalPreservesBuiltInToolConfig(t *testing.T) {
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected decoded built-in tool with config to validate, got %v", err)
 	}
+}
+
+func TestResponsesRequestUnmarshalRejectsBuiltInToolWithNullFunctionField(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{
+				"type":"web_search_preview",
+				"function":null
+			}
+		]
+	}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].function is only allowed for function tools")
 }
 
 func TestValidateResponsesRequestRejectsUnsupportedBuiltInTool(t *testing.T) {

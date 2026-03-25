@@ -12,10 +12,11 @@ type ToolFunction struct {
 }
 
 type Tool struct {
-	Type     string                     `json:"type"`
-	Name     string                     `json:"name,omitempty"`
-	Function *ToolFunction              `json:"function,omitempty"`
-	Config   map[string]json.RawMessage `json:"-"`
+	Type             string                     `json:"type"`
+	Name             string                     `json:"name,omitempty"`
+	Function         *ToolFunction              `json:"function,omitempty"`
+	Config           map[string]json.RawMessage `json:"-"`
+	hasFunctionField bool                       `json:"-"`
 }
 
 func (t *Tool) UnmarshalJSON(data []byte) error {
@@ -29,11 +30,13 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	_, hasFunctionField := raw["function"]
 	delete(raw, "type")
 	delete(raw, "name")
 	delete(raw, "function")
 
 	*t = Tool(decoded)
+	t.hasFunctionField = hasFunctionField
 	if len(raw) > 0 {
 		t.Config = raw
 	}
@@ -45,10 +48,12 @@ type ToolChoiceFunction struct {
 }
 
 type ToolChoice struct {
-	Mode     string              `json:"-"`
-	Type     string              `json:"type"`
-	Name     string              `json:"name,omitempty"`
-	Function *ToolChoiceFunction `json:"function,omitempty"`
+	Mode             string              `json:"-"`
+	Type             string              `json:"type"`
+	Name             string              `json:"name,omitempty"`
+	Function         *ToolChoiceFunction `json:"function,omitempty"`
+	hasFunctionField bool                `json:"-"`
+	hasNameField     bool                `json:"-"`
 }
 
 func (tc *ToolChoice) UnmarshalJSON(data []byte) error {
@@ -80,8 +85,15 @@ func (tc *ToolChoice) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(trimmed, &decoded); err != nil {
 			return err
 		}
+
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
+			return err
+		}
 		*tc = ToolChoice(decoded)
 		tc.Mode = "object"
+		_, tc.hasFunctionField = raw["function"]
+		_, tc.hasNameField = raw["name"]
 		return nil
 	}
 
