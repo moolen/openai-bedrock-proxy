@@ -27,7 +27,13 @@ type ToolResultBlock struct {
 	Content   []ToolResultContentBlock
 }
 
+const (
+	toolResultContentTypeText = "text"
+	toolResultContentTypeJSON = "json"
+)
+
 type ToolResultContentBlock struct {
+	Type string
 	Text string
 	JSON any
 }
@@ -122,6 +128,12 @@ func toBedrockContentBlocks(blocks []conversation.Block) ([]ContentBlock, error)
 			if block.ToolCall == nil {
 				return nil, openai.NewInvalidRequestError("assistant tool_call block is missing data")
 			}
+			if strings.TrimSpace(block.ToolCall.ID) == "" {
+				return nil, openai.NewInvalidRequestError("assistant tool_call id is required")
+			}
+			if strings.TrimSpace(block.ToolCall.Name) == "" {
+				return nil, openai.NewInvalidRequestError("assistant tool_call name is required")
+			}
 			input, err := parseToolUseInput(block.ToolCall.Arguments)
 			if err != nil {
 				return nil, err
@@ -136,6 +148,9 @@ func toBedrockContentBlocks(blocks []conversation.Block) ([]ContentBlock, error)
 		case conversation.BlockTypeToolResult:
 			if block.ToolResult == nil {
 				return nil, openai.NewInvalidRequestError("user tool_result block is missing data")
+			}
+			if strings.TrimSpace(block.ToolResult.CallID) == "" {
+				return nil, openai.NewInvalidRequestError("user tool_result call_id is required")
 			}
 			out = append(out, ContentBlock{
 				ToolResult: &ToolResultBlock{
@@ -191,7 +206,7 @@ func toBedrockToolChoice(choice conversation.ToolChoice) (*ToolChoice, error) {
 }
 
 func toToolSpec(tool conversation.ToolDefinition) (ToolSpec, error) {
-	if tool.BuiltIn || tool.Type != "function" {
+	if tool.BuiltIn {
 		schema, err := syntheticBuiltInInputSchema(tool)
 		if err != nil {
 			return ToolSpec{}, err
@@ -201,6 +216,9 @@ func toToolSpec(tool conversation.ToolDefinition) (ToolSpec, error) {
 			Description: syntheticBuiltInDescription(tool),
 			InputSchema: schema,
 		}, nil
+	}
+	if tool.Type != "function" {
+		return ToolSpec{}, openai.NewInvalidRequestError("unsupported tool definition type")
 	}
 
 	return ToolSpec{
@@ -295,7 +313,13 @@ func parseToolUseInput(arguments string) (any, error) {
 
 func toToolResultContentBlocks(output any) []ToolResultContentBlock {
 	if text, ok := output.(string); ok {
-		return []ToolResultContentBlock{{Text: text}}
+		return []ToolResultContentBlock{{
+			Type: toolResultContentTypeText,
+			Text: text,
+		}}
 	}
-	return []ToolResultContentBlock{{JSON: output}}
+	return []ToolResultContentBlock{{
+		Type: toolResultContentTypeJSON,
+		JSON: output,
+	}}
 }

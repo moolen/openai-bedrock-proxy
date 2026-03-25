@@ -361,6 +361,102 @@ func TestClientRespondConversationBuildsToolAwareConverseInput(t *testing.T) {
 	}
 }
 
+func TestClientRespondConversationPreservesEmptyStringToolResultAsText(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberText{Value: "done"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	_, err := client.RespondConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolResult,
+						ToolResult: &conversation.ToolResult{
+							CallID: "call_123",
+							Output: "",
+						},
+					},
+				},
+			},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	toolResult, ok := runtime.lastConverseInput.Messages[0].Content[0].(*bedrocktypes.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("expected tool result block, got %T", runtime.lastConverseInput.Messages[0].Content[0])
+	}
+	if len(toolResult.Value.Content) != 1 {
+		t.Fatalf("expected one tool result content block, got %#v", toolResult.Value.Content)
+	}
+	textResult, ok := toolResult.Value.Content[0].(*bedrocktypes.ToolResultContentBlockMemberText)
+	if !ok {
+		t.Fatalf("expected empty string to remain text content, got %T", toolResult.Value.Content[0])
+	}
+	if textResult.Value != "" {
+		t.Fatalf("expected empty text result, got %q", textResult.Value)
+	}
+}
+
+func TestClientRespondConversationOmitsEmptyToolDescription(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberText{Value: "done"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	_, err := client.RespondConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type: "function",
+				Name: "lookup",
+				Parameters: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	functionTool, ok := runtime.lastConverseInput.ToolConfig.Tools[0].(*bedrocktypes.ToolMemberToolSpec)
+	if !ok {
+		t.Fatalf("expected tool spec, got %T", runtime.lastConverseInput.ToolConfig.Tools[0])
+	}
+	if functionTool.Value.Description != nil {
+		t.Fatalf("expected empty description to be omitted, got %#v", functionTool.Value.Description)
+	}
+}
+
 func TestClientStreamConversationRejectsNilResponse(t *testing.T) {
 	client := &Client{runtime: &fakeRuntime{}}
 	_, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{

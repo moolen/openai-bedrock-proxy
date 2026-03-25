@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"testing"
 
@@ -239,6 +240,117 @@ func TestTranslateConversationMapsToolUseAndToolResultBlocks(t *testing.T) {
 	}
 }
 
+func TestTranslateConversationRejectsUnsupportedNonBuiltInToolDefinitions(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type: "custom_tool",
+				Name: "custom_tool",
+			},
+		},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateConversationRejectsToolChoiceWithoutTools(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+		ToolChoice: conversation.ToolChoice{Type: "auto"},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateConversationRejectsInvalidToolCallPayloads(t *testing.T) {
+	cases := []struct {
+		name     string
+		toolCall conversation.ToolCall
+	}{
+		{
+			name: "missing id",
+			toolCall: conversation.ToolCall{
+				Name:      "lookup",
+				Arguments: `{"q":"x"}`,
+			},
+		},
+		{
+			name: "missing name",
+			toolCall: conversation.ToolCall{
+				ID:        "call_123",
+				Arguments: `{"q":"x"}`,
+			},
+		},
+		{
+			name: "invalid arguments json",
+			toolCall: conversation.ToolCall{
+				ID:        "call_123",
+				Name:      "lookup",
+				Arguments: `{"q":`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := conversation.Request{
+				Messages: []conversation.Message{
+					{
+						Role: "assistant",
+						Blocks: []conversation.Block{
+							{
+								Type:     conversation.BlockTypeToolCall,
+								ToolCall: &tc.toolCall,
+							},
+						},
+					},
+				},
+			}
+
+			_, err := TranslateConversation("model", request, nil, nil)
+			assertInvalidRequestError(t, err)
+		})
+	}
+}
+
+func TestTranslateConversationRejectsMissingToolResultCallID(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolResult,
+						ToolResult: &conversation.ToolResult{
+							Output: "ok",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
 func TestTranslateConversationMapsInferenceControls(t *testing.T) {
 	maxTokens := 128
 	temperature := 0.4
@@ -341,5 +453,16 @@ func TestTranslateRequestRejectsUnsupportedInputTypes(t *testing.T) {
 	}
 	if _, err := TranslateRequest(req); err == nil {
 		t.Fatal("expected unsupported input type error")
+	}
+}
+
+func assertInvalidRequestError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected invalid request error")
+	}
+	var invalid openai.InvalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected invalid request error, got %T", err)
 	}
 }

@@ -322,14 +322,17 @@ func toSDKToolConfig(config *ToolConfig) *bedrocktypes.ToolConfiguration {
 		Tools: make([]bedrocktypes.Tool, 0, len(config.Tools)),
 	}
 	for _, tool := range config.Tools {
-		out.Tools = append(out.Tools, &bedrocktypes.ToolMemberToolSpec{
-			Value: bedrocktypes.ToolSpecification{
-				Name:        aws.String(tool.Name),
-				Description: aws.String(tool.Description),
-				InputSchema: &bedrocktypes.ToolInputSchemaMemberJson{
-					Value: bedrockdocument.NewLazyDocument(tool.InputSchema),
-				},
+		spec := bedrocktypes.ToolSpecification{
+			Name: aws.String(tool.Name),
+			InputSchema: &bedrocktypes.ToolInputSchemaMemberJson{
+				Value: bedrockdocument.NewLazyDocument(tool.InputSchema),
 			},
+		}
+		if tool.Description != "" {
+			spec.Description = aws.String(tool.Description)
+		}
+		out.Tools = append(out.Tools, &bedrocktypes.ToolMemberToolSpec{
+			Value: spec,
 		})
 	}
 	if config.ToolChoice != nil {
@@ -360,9 +363,11 @@ func toSDKToolChoice(choice *ToolChoice) bedrocktypes.ToolChoice {
 func toSDKToolResultContent(content []ToolResultContentBlock) []bedrocktypes.ToolResultContentBlock {
 	out := make([]bedrocktypes.ToolResultContentBlock, 0, len(content))
 	for _, block := range content {
-		switch {
-		case block.Text != "":
+		switch block.Type {
+		case toolResultContentTypeText:
 			out = append(out, &bedrocktypes.ToolResultContentBlockMemberText{Value: block.Text})
+		case toolResultContentTypeJSON:
+			fallthrough
 		default:
 			out = append(out, &bedrocktypes.ToolResultContentBlockMemberJson{
 				Value: bedrockdocument.NewLazyDocument(block.JSON),
