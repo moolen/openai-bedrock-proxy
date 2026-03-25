@@ -14,6 +14,7 @@ import (
 	bedrockcatalog "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	bedrockcatalogtypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	bedrockdocument "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	applog "github.com/moolen/openai-bedrock-proxy/internal/logging"
@@ -246,6 +247,7 @@ func toConverseInput(req ConverseRequest) *bedrockruntime.ConverseInput {
 		Messages:        toBedrockMessages(req.Messages),
 		System:          toBedrockSystem(req.System),
 		InferenceConfig: toInferenceConfig(req),
+		ToolConfig:      toSDKToolConfig(req.ToolConfig),
 	}
 }
 
@@ -255,6 +257,7 @@ func toConverseStreamInput(req ConverseRequest) *bedrockruntime.ConverseStreamIn
 		Messages:        toBedrockMessages(req.Messages),
 		System:          toBedrockSystem(req.System),
 		InferenceConfig: toInferenceConfig(req),
+		ToolConfig:      toSDKToolConfig(req.ToolConfig),
 	}
 }
 
@@ -263,7 +266,25 @@ func toBedrockMessages(messages []Message) []bedrocktypes.Message {
 	for _, message := range messages {
 		content := make([]bedrocktypes.ContentBlock, 0, len(message.Content))
 		for _, block := range message.Content {
-			content = append(content, &bedrocktypes.ContentBlockMemberText{Value: block.Text})
+			switch {
+			case block.ToolUse != nil:
+				content = append(content, &bedrocktypes.ContentBlockMemberToolUse{
+					Value: bedrocktypes.ToolUseBlock{
+						ToolUseId: aws.String(block.ToolUse.ToolUseID),
+						Name:      aws.String(block.ToolUse.Name),
+						Input:     bedrockdocument.NewLazyDocument(block.ToolUse.Input),
+					},
+				})
+			case block.ToolResult != nil:
+				content = append(content, &bedrocktypes.ContentBlockMemberToolResult{
+					Value: bedrocktypes.ToolResultBlock{
+						ToolUseId: aws.String(block.ToolResult.ToolUseID),
+						Content:   toSDKToolResultContent(block.ToolResult.Content),
+					},
+				})
+			default:
+				content = append(content, &bedrocktypes.ContentBlockMemberText{Value: block.Text})
+			}
 		}
 		out = append(out, bedrocktypes.Message{
 			Role:    bedrocktypes.ConversationRole(message.Role),
@@ -290,6 +311,65 @@ func toInferenceConfig(req ConverseRequest) *bedrocktypes.InferenceConfiguration
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 	}
+}
+
+func toSDKToolConfig(config *ToolConfig) *bedrocktypes.ToolConfiguration {
+	if config == nil || len(config.Tools) == 0 {
+		return nil
+	}
+
+	out := &bedrocktypes.ToolConfiguration{
+		Tools: make([]bedrocktypes.Tool, 0, len(config.Tools)),
+	}
+	for _, tool := range config.Tools {
+		out.Tools = append(out.Tools, &bedrocktypes.ToolMemberToolSpec{
+			Value: bedrocktypes.ToolSpecification{
+				Name:        aws.String(tool.Name),
+				Description: aws.String(tool.Description),
+				InputSchema: &bedrocktypes.ToolInputSchemaMemberJson{
+					Value: bedrockdocument.NewLazyDocument(tool.InputSchema),
+				},
+			},
+		})
+	}
+	if config.ToolChoice != nil {
+		out.ToolChoice = toSDKToolChoice(config.ToolChoice)
+	}
+	return out
+}
+
+func toSDKToolChoice(choice *ToolChoice) bedrocktypes.ToolChoice {
+	if choice == nil {
+		return nil
+	}
+	if choice.Auto {
+		return &bedrocktypes.ToolChoiceMemberAuto{
+			Value: bedrocktypes.AutoToolChoice{},
+		}
+	}
+	if choice.Tool != "" {
+		return &bedrocktypes.ToolChoiceMemberTool{
+			Value: bedrocktypes.SpecificToolChoice{
+				Name: aws.String(choice.Tool),
+			},
+		}
+	}
+	return nil
+}
+
+func toSDKToolResultContent(content []ToolResultContentBlock) []bedrocktypes.ToolResultContentBlock {
+	out := make([]bedrocktypes.ToolResultContentBlock, 0, len(content))
+	for _, block := range content {
+		switch {
+		case block.Text != "":
+			out = append(out, &bedrocktypes.ToolResultContentBlockMemberText{Value: block.Text})
+		default:
+			out = append(out, &bedrocktypes.ToolResultContentBlockMemberJson{
+				Value: bedrockdocument.NewLazyDocument(block.JSON),
+			})
+		}
+	}
+	return out
 }
 
 func extractText(resp *bedrockruntime.ConverseOutput) string {

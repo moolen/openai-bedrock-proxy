@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 
@@ -38,8 +39,18 @@ func TestTranslateConversationBuildsBedrockMessages(t *testing.T) {
 	request := conversation.Request{
 		System: []string{"be precise"},
 		Messages: []conversation.Message{
-			{Role: "user", Text: "hello"},
-			{Role: "assistant", Text: "hi"},
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hi"},
+				},
+			},
 		},
 	}
 
@@ -64,10 +75,183 @@ func TestTranslateConversationBuildsBedrockMessages(t *testing.T) {
 	}
 }
 
+func TestTranslateConversationMapsToolConfigAndAutoChoice(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Find it"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type:        "function",
+				Name:        "lookup",
+				Description: "Look up a value",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"q": map[string]any{"type": "string"},
+					},
+					"required": []any{"q"},
+				},
+			},
+			{
+				Type:    "web_search_preview",
+				Name:    "__builtin_web_search_preview",
+				BuiltIn: true,
+				Config: map[string]json.RawMessage{
+					"user_location": json.RawMessage(`{"type":"approximate","country":"DE"}`),
+				},
+			},
+		},
+		ToolChoice: conversation.ToolChoice{Type: "auto"},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ToolConfig == nil {
+		t.Fatal("expected tool config to be present")
+	}
+	if len(got.ToolConfig.Tools) != 2 {
+		t.Fatalf("expected 2 translated tools, got %#v", got.ToolConfig.Tools)
+	}
+	if got.ToolConfig.Tools[0].Name != "lookup" {
+		t.Fatalf("expected function tool name to map, got %#v", got.ToolConfig.Tools[0])
+	}
+	if got.ToolConfig.Tools[0].Description != "Look up a value" {
+		t.Fatalf("expected function tool description to map, got %#v", got.ToolConfig.Tools[0])
+	}
+	if got.ToolConfig.Tools[0].InputSchema["type"] != "object" {
+		t.Fatalf("expected function tool schema to map, got %#v", got.ToolConfig.Tools[0].InputSchema)
+	}
+
+	builtIn := got.ToolConfig.Tools[1]
+	if builtIn.Name != "__builtin_web_search_preview" {
+		t.Fatalf("expected synthetic built-in name, got %#v", builtIn)
+	}
+	if builtIn.InputSchema["x-openai-tool-type"] != "web_search_preview" {
+		t.Fatalf("expected built-in schema metadata, got %#v", builtIn.InputSchema)
+	}
+	properties, ok := builtIn.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected built-in schema properties, got %#v", builtIn.InputSchema)
+	}
+	if _, ok := properties["query"]; !ok {
+		t.Fatalf("expected built-in schema to expose query input, got %#v", properties)
+	}
+	rawConfig, ok := builtIn.InputSchema["x-openai-config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected built-in schema config metadata, got %#v", builtIn.InputSchema)
+	}
+	location, ok := rawConfig["user_location"].(map[string]any)
+	if !ok || location["country"] != "DE" {
+		t.Fatalf("expected built-in config to survive translation, got %#v", rawConfig)
+	}
+	if got.ToolConfig.ToolChoice == nil || !got.ToolConfig.ToolChoice.Auto {
+		t.Fatalf("expected auto tool choice to map, got %#v", got.ToolConfig.ToolChoice)
+	}
+}
+
+func TestTranslateConversationMapsToolUseAndToolResultBlocks(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Checking"},
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_123",
+							Name:      "lookup",
+							Arguments: `{"q":"x"}`,
+						},
+					},
+				},
+			},
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolResult,
+						ToolResult: &conversation.ToolResult{
+							CallID: "call_123",
+							Output: map[string]any{"answer": "ok"},
+						},
+					},
+					{Type: conversation.BlockTypeText, Text: "continue"},
+				},
+			},
+		},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %#v", got.Messages)
+	}
+
+	assistant := got.Messages[0]
+	if len(assistant.Content) != 2 {
+		t.Fatalf("expected assistant content ordering to be preserved, got %#v", assistant.Content)
+	}
+	if assistant.Content[0].Text != "Checking" {
+		t.Fatalf("expected assistant text block first, got %#v", assistant.Content[0])
+	}
+	if assistant.Content[1].ToolUse == nil {
+		t.Fatalf("expected assistant tool use block, got %#v", assistant.Content[1])
+	}
+	if assistant.Content[1].ToolUse.ToolUseID != "call_123" || assistant.Content[1].ToolUse.Name != "lookup" {
+		t.Fatalf("unexpected translated tool use block: %#v", assistant.Content[1].ToolUse)
+	}
+	input, ok := assistant.Content[1].ToolUse.Input.(map[string]any)
+	if !ok || input["q"] != "x" {
+		t.Fatalf("expected tool use arguments to decode to JSON, got %#v", assistant.Content[1].ToolUse.Input)
+	}
+
+	user := got.Messages[1]
+	if len(user.Content) != 2 {
+		t.Fatalf("expected user content ordering to be preserved, got %#v", user.Content)
+	}
+	if user.Content[0].ToolResult == nil {
+		t.Fatalf("expected user tool result block, got %#v", user.Content[0])
+	}
+	if user.Content[0].ToolResult.ToolUseID != "call_123" {
+		t.Fatalf("unexpected translated tool result id: %#v", user.Content[0].ToolResult)
+	}
+	if len(user.Content[0].ToolResult.Content) != 1 {
+		t.Fatalf("expected single translated tool result content block, got %#v", user.Content[0].ToolResult.Content)
+	}
+	jsonContent := user.Content[0].ToolResult.Content[0].JSON
+	output, ok := jsonContent.(map[string]any)
+	if !ok || output["answer"] != "ok" {
+		t.Fatalf("expected structured tool result output, got %#v", jsonContent)
+	}
+	if user.Content[1].Text != "continue" {
+		t.Fatalf("expected trailing user text block, got %#v", user.Content[1])
+	}
+}
+
 func TestTranslateConversationMapsInferenceControls(t *testing.T) {
 	maxTokens := 128
 	temperature := 0.4
-	request := conversation.Request{Messages: []conversation.Message{{Role: "user", Text: "hello"}}}
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+	}
 
 	got, err := TranslateConversation("model", request, &maxTokens, &temperature)
 	if err != nil {
@@ -83,7 +267,16 @@ func TestTranslateConversationMapsInferenceControls(t *testing.T) {
 
 func TestTranslateConversationRejectsOutOfRangeMaxTokens(t *testing.T) {
 	maxTokens := math.MaxInt32 + 1
-	request := conversation.Request{Messages: []conversation.Message{{Role: "user", Text: "hello"}}}
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+	}
 
 	if _, err := TranslateConversation("model", request, &maxTokens, nil); err == nil {
 		t.Fatal("expected out-of-range max tokens error")

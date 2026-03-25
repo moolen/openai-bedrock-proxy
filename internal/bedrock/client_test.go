@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	bedrocksvc "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	bedrockcatalogtypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	bedrockdocument "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
@@ -155,8 +157,13 @@ func TestClientRespondConversationBuildsConverseInputAndParsesText(t *testing.T)
 	client := &Client{runtime: runtime}
 
 	resp, err := client.RespondConversation(context.Background(), "model-id", conversation.Request{
-		System:   []string{"be precise"},
-		Messages: []conversation.Message{{Role: "user", Text: "hello"}},
+		System: []string{"be precise"},
+		Messages: []conversation.Message{{
+			Role: "user",
+			Blocks: []conversation.Block{
+				{Type: conversation.BlockTypeText, Text: "hello"},
+			},
+		}},
 	}, &maxTokens, &temperature)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -190,10 +197,179 @@ func TestClientRespondConversationBuildsConverseInputAndParsesText(t *testing.T)
 	}
 }
 
+func TestClientRespondConversationBuildsToolAwareConverseInput(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberText{Value: "done"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	resp, err := client.RespondConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Checking"},
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_123",
+							Name:      "lookup",
+							Arguments: `{"q":"weather"}`,
+						},
+					},
+				},
+			},
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolResult,
+						ToolResult: &conversation.ToolResult{
+							CallID: "call_123",
+							Output: map[string]any{"answer": "sunny"},
+						},
+					},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type:        "function",
+				Name:        "lookup",
+				Description: "Look up weather",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"q": map[string]any{"type": "string"},
+					},
+				},
+			},
+			{
+				Type:    "web_search_preview",
+				Name:    "__builtin_web_search_preview",
+				BuiltIn: true,
+				Config: map[string]json.RawMessage{
+					"user_location": json.RawMessage(`{"type":"approximate","country":"DE"}`),
+				},
+			},
+		},
+		ToolChoice: conversation.ToolChoice{Type: "auto"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "done" {
+		t.Fatalf("expected translated response text, got %q", resp.Text)
+	}
+	if runtime.lastConverseInput == nil {
+		t.Fatal("expected converse input to be captured")
+	}
+	if runtime.lastConverseInput.ToolConfig == nil {
+		t.Fatal("expected tool config to be emitted")
+	}
+	if len(runtime.lastConverseInput.ToolConfig.Tools) != 2 {
+		t.Fatalf("expected 2 tool specs, got %#v", runtime.lastConverseInput.ToolConfig.Tools)
+	}
+	if _, ok := runtime.lastConverseInput.ToolConfig.ToolChoice.(*bedrocktypes.ToolChoiceMemberAuto); !ok {
+		t.Fatalf("expected auto tool choice, got %T", runtime.lastConverseInput.ToolConfig.ToolChoice)
+	}
+	if len(runtime.lastConverseInput.Messages) != 2 {
+		t.Fatalf("expected tool-capable messages to map, got %#v", runtime.lastConverseInput.Messages)
+	}
+
+	assistant := runtime.lastConverseInput.Messages[0]
+	if len(assistant.Content) != 2 {
+		t.Fatalf("expected assistant content blocks, got %#v", assistant.Content)
+	}
+	toolUse, ok := assistant.Content[1].(*bedrocktypes.ContentBlockMemberToolUse)
+	if !ok {
+		t.Fatalf("expected assistant tool use block, got %T", assistant.Content[1])
+	}
+	if aws.ToString(toolUse.Value.ToolUseId) != "call_123" || aws.ToString(toolUse.Value.Name) != "lookup" {
+		t.Fatalf("unexpected SDK tool use block: %#v", toolUse.Value)
+	}
+	toolUseInput, ok := decodeDocument(t, toolUse.Value.Input).(map[string]any)
+	if !ok {
+		t.Fatalf("expected decoded tool use input object, got %#v", toolUse.Value.Input)
+	}
+	if toolUseInput["q"] != "weather" {
+		t.Fatalf("expected tool use input JSON to survive, got %#v", toolUseInput)
+	}
+
+	user := runtime.lastConverseInput.Messages[1]
+	if len(user.Content) != 1 {
+		t.Fatalf("expected user tool result block, got %#v", user.Content)
+	}
+	toolResult, ok := user.Content[0].(*bedrocktypes.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("expected user tool result block, got %T", user.Content[0])
+	}
+	if aws.ToString(toolResult.Value.ToolUseId) != "call_123" {
+		t.Fatalf("unexpected SDK tool result id: %#v", toolResult.Value)
+	}
+	if len(toolResult.Value.Content) != 1 {
+		t.Fatalf("expected one SDK tool result content block, got %#v", toolResult.Value.Content)
+	}
+	jsonResult, ok := toolResult.Value.Content[0].(*bedrocktypes.ToolResultContentBlockMemberJson)
+	if !ok {
+		t.Fatalf("expected structured SDK tool result content, got %T", toolResult.Value.Content[0])
+	}
+	toolResultOutput, ok := decodeDocument(t, jsonResult.Value).(map[string]any)
+	if !ok {
+		t.Fatalf("expected decoded tool result object, got %#v", jsonResult.Value)
+	}
+	if toolResultOutput["answer"] != "sunny" {
+		t.Fatalf("expected tool result output JSON to survive, got %#v", toolResultOutput)
+	}
+
+	functionTool, ok := runtime.lastConverseInput.ToolConfig.Tools[0].(*bedrocktypes.ToolMemberToolSpec)
+	if !ok {
+		t.Fatalf("expected first SDK tool spec, got %T", runtime.lastConverseInput.ToolConfig.Tools[0])
+	}
+	if aws.ToString(functionTool.Value.Name) != "lookup" {
+		t.Fatalf("unexpected function tool name: %#v", functionTool.Value)
+	}
+	functionSchema, ok := decodeDocument(t, functionTool.Value.InputSchema.(*bedrocktypes.ToolInputSchemaMemberJson).Value).(map[string]any)
+	if !ok {
+		t.Fatalf("expected decoded function schema object, got %#v", functionTool.Value.InputSchema)
+	}
+	if functionSchema["type"] != "object" {
+		t.Fatalf("expected function schema to survive, got %#v", functionSchema)
+	}
+
+	builtInTool, ok := runtime.lastConverseInput.ToolConfig.Tools[1].(*bedrocktypes.ToolMemberToolSpec)
+	if !ok {
+		t.Fatalf("expected second SDK tool spec, got %T", runtime.lastConverseInput.ToolConfig.Tools[1])
+	}
+	if aws.ToString(builtInTool.Value.Name) != "__builtin_web_search_preview" {
+		t.Fatalf("unexpected synthetic tool name: %#v", builtInTool.Value)
+	}
+	builtInSchema, ok := decodeDocument(t, builtInTool.Value.InputSchema.(*bedrocktypes.ToolInputSchemaMemberJson).Value).(map[string]any)
+	if !ok {
+		t.Fatalf("expected decoded built-in schema object, got %#v", builtInTool.Value.InputSchema)
+	}
+	if builtInSchema["x-openai-tool-type"] != "web_search_preview" {
+		t.Fatalf("expected built-in schema metadata, got %#v", builtInSchema)
+	}
+}
+
 func TestClientStreamConversationRejectsNilResponse(t *testing.T) {
 	client := &Client{runtime: &fakeRuntime{}}
 	_, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{
-		Messages: []conversation.Message{{Role: "user", Text: "hello"}},
+		Messages: []conversation.Message{{
+			Role: "user",
+			Blocks: []conversation.Block{
+				{Type: conversation.BlockTypeText, Text: "hello"},
+			},
+		}},
 	}, nil, nil, httptest.NewRecorder())
 	if err == nil {
 		t.Fatal("expected error when bedrock stream response is nil")
@@ -230,7 +406,12 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	recorder := httptest.NewRecorder()
 
 	resp, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{
-		Messages: []conversation.Message{{Role: "user", Text: "hello"}},
+		Messages: []conversation.Message{{
+			Role: "user",
+			Blocks: []conversation.Block{
+				{Type: conversation.BlockTypeText, Text: "hello"},
+			},
+		}},
 	}, nil, nil, recorder)
 	if !errors.Is(err, streamErr) {
 		t.Fatalf("expected stream error, got %v", err)
@@ -299,6 +480,73 @@ func TestClientStreamWrapperNormalizesAndStreams(t *testing.T) {
 		"event: response.completed\ndata: {\"status\":\"end_turn\"}\n\n"
 	if got := recorder.Body.String(); got != expected {
 		t.Fatalf("expected SSE body %q, got %q", expected, got)
+	}
+}
+
+func TestClientStreamConversationBuildsToolAwareConverseStreamInput(t *testing.T) {
+	events := make(chan bedrocktypes.ConverseStreamOutput, 1)
+	events <- &bedrocktypes.ConverseStreamOutputMemberMessageStop{
+		Value: bedrocktypes.MessageStopEvent{StopReason: bedrocktypes.StopReasonEndTurn},
+	}
+	close(events)
+
+	runtime := &fakeRuntime{converseStreamOutput: &bedrockruntime.ConverseStreamOutput{}}
+	client := &Client{
+		runtime: runtime,
+		streamAdapter: func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+			return &fakeStream{events: events}, nil
+		},
+	}
+
+	_, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_123",
+							Name:      "lookup",
+							Arguments: `{"q":"weather"}`,
+						},
+					},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type: "function",
+				Name: "lookup",
+				Parameters: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+		ToolChoice: conversation.ToolChoice{Type: "auto"},
+	}, nil, nil, httptest.NewRecorder())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastConverseStreamInput == nil {
+		t.Fatal("expected converse stream input to be captured")
+	}
+	if runtime.lastConverseStreamInput.ToolConfig == nil {
+		t.Fatal("expected tool config on stream input")
+	}
+	if _, ok := runtime.lastConverseStreamInput.ToolConfig.ToolChoice.(*bedrocktypes.ToolChoiceMemberAuto); !ok {
+		t.Fatalf("expected auto tool choice on stream input, got %T", runtime.lastConverseStreamInput.ToolConfig.ToolChoice)
+	}
+	toolUse, ok := runtime.lastConverseStreamInput.Messages[0].Content[0].(*bedrocktypes.ContentBlockMemberToolUse)
+	if !ok {
+		t.Fatalf("expected tool use block on stream input, got %T", runtime.lastConverseStreamInput.Messages[0].Content[0])
+	}
+	toolUseInput, ok := decodeDocument(t, toolUse.Value.Input).(map[string]any)
+	if !ok {
+		t.Fatalf("expected decoded stream tool input object, got %#v", toolUse.Value.Input)
+	}
+	if toolUseInput["q"] != "weather" {
+		t.Fatalf("expected stream tool input JSON to survive, got %#v", toolUseInput)
 	}
 }
 
@@ -393,4 +641,17 @@ type fakeCatalog struct {
 func (f *fakeCatalog) ListFoundationModels(_ context.Context, input *bedrocksvc.ListFoundationModelsInput, _ ...func(*bedrocksvc.Options)) (*bedrocksvc.ListFoundationModelsOutput, error) {
 	f.lastInput = input
 	return f.output, f.err
+}
+
+func decodeDocument(t *testing.T, doc bedrockdocument.Interface) any {
+	t.Helper()
+	raw, err := doc.MarshalSmithyDocument()
+	if err != nil {
+		t.Fatalf("failed to marshal Smithy document: %v", err)
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("failed to decode Smithy document JSON: %v", err)
+	}
+	return decoded
 }
