@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/moolen/openai-bedrock-proxy/internal/conversation"
+	applog "github.com/moolen/openai-bedrock-proxy/internal/logging"
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
@@ -37,7 +39,9 @@ type streamEvents interface {
 type streamAdapterFunc func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error)
 
 func NewClient(ctx context.Context, region string, loadConfig LoadConfigFunc) (*Client, error) {
+	logger := bedrockLogger(ctx).With("aws_region", region)
 	if loadConfig == nil {
+		logger.Error("load config function is required")
 		return nil, errors.New("load config function is required")
 	}
 
@@ -46,11 +50,14 @@ func NewClient(ctx context.Context, region string, loadConfig LoadConfigFunc) (*
 		opts = append(opts, config.WithRegion(region))
 	}
 
+	logger.Debug("loading aws config for bedrock client")
 	awsCfg, err := loadConfig(ctx, opts...)
 	if err != nil {
+		logger.Error("failed to load aws config", "error", err)
 		return nil, err
 	}
 
+	logger.Info("initialized bedrock runtime client", "resolved_region", awsCfg.Region)
 	return &Client{
 		runtime: bedrockruntime.NewFromConfig(awsCfg),
 	}, nil
@@ -65,50 +72,110 @@ func (c *Client) ConverseStream(ctx context.Context, input *bedrockruntime.Conve
 }
 
 func (c *Client) RespondConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (ConverseResponse, error) {
+	logger := bedrockLogger(ctx).With("model_id", modelID)
+	logger.Debug("preparing bedrock converse request",
+		"system", req.System,
+		"messages", req.Messages,
+		"max_output_tokens", maxOutputTokens,
+		"temperature", temperature,
+	)
+
 	translated, err := TranslateConversation(modelID, req, maxOutputTokens, temperature)
 	if err != nil {
+		logger.Error("failed to translate conversation for converse", "error", err)
 		return ConverseResponse{}, err
 	}
+
+	logger.Debug("translated bedrock converse request",
+		"system", translated.System,
+		"messages", translated.Messages,
+		"max_tokens", translated.MaxTokens,
+		"translated_temperature", translated.Temperature,
+	)
 
 	input := toConverseInput(translated)
-
 	resp, err := c.runtime.Converse(ctx, input)
 	if err != nil {
+		logger.Error("bedrock converse failed", "error", err)
 		return ConverseResponse{}, err
 	}
 
-	return ConverseResponse{
+	result := ConverseResponse{
 		ResponseID: responseIDFromMetadata(resp),
 		Text:       extractText(resp),
-	}, nil
+	}
+	logger.Info("bedrock converse completed", "response_id", result.ResponseID)
+	logger.Debug("bedrock converse response text",
+		"response_id", result.ResponseID,
+		"text", result.Text,
+	)
+	return result, nil
 }
 
 func (c *Client) StreamConversation(ctx context.Context, modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64, w http.ResponseWriter) (ConverseResponse, error) {
+	logger := bedrockLogger(ctx).With("model_id", modelID)
+	logger.Debug("preparing bedrock converse stream request",
+		"system", req.System,
+		"messages", req.Messages,
+		"max_output_tokens", maxOutputTokens,
+		"temperature", temperature,
+	)
+
 	translated, err := TranslateConversation(modelID, req, maxOutputTokens, temperature)
 	if err != nil {
+		logger.Error("failed to translate conversation for stream", "error", err)
 		return ConverseResponse{}, err
 	}
 
+	logger.Debug("translated bedrock converse stream request",
+		"system", translated.System,
+		"messages", translated.Messages,
+		"max_tokens", translated.MaxTokens,
+		"translated_temperature", translated.Temperature,
+	)
+
 	resp, err := c.runtime.ConverseStream(ctx, toConverseStreamInput(translated))
 	if err != nil {
+		logger.Error("bedrock converse stream failed", "error", err)
 		return ConverseResponse{}, err
 	}
+
 	adapter := c.streamAdapter
 	if adapter == nil {
 		adapter = defaultStreamAdapter
 	}
 	stream, err := adapter(resp)
 	if err != nil {
+		logger.Error("failed to adapt bedrock stream", "error", err)
 		return ConverseResponse{}, err
 	}
 	defer stream.Close()
 
-	text, stopReason, err := processStream(stream, w)
-	return ConverseResponse{
+	logger.Info("bedrock stream started")
+	text, stopReason, err := processStream(stream, w, logger)
+	result := ConverseResponse{
 		ResponseID: responseIDFromStreamMetadata(resp),
 		Text:       text,
 		StopReason: stopReason,
-	}, err
+	}
+	if err != nil {
+		logger.Error("bedrock stream processing failed",
+			"response_id", result.ResponseID,
+			"stop_reason", stopReason,
+			"error", err,
+		)
+		return result, err
+	}
+
+	logger.Info("bedrock stream completed",
+		"response_id", result.ResponseID,
+		"stop_reason", stopReason,
+	)
+	logger.Debug("bedrock stream final text",
+		"response_id", result.ResponseID,
+		"text", text,
+	)
+	return result, nil
 }
 
 func (c *Client) Respond(ctx context.Context, req openai.ResponsesRequest) (openai.Response, error) {
@@ -232,7 +299,7 @@ func defaultStreamAdapter(resp *bedrockruntime.ConverseStreamOutput) (streamEven
 	return stream, nil
 }
 
-func processStream(stream streamEvents, w http.ResponseWriter) (string, string, error) {
+func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logger) (string, string, error) {
 	var accumulator TextAccumulator
 	stopReason := ""
 
@@ -244,16 +311,20 @@ func processStream(stream streamEvents, w http.ResponseWriter) (string, string, 
 				continue
 			}
 			accumulator.Add(textDelta.Value)
+			logger.Debug("bedrock stream text delta", "delta", textDelta.Value)
 			if err := openai.WriteEvent(w, "response.output_text.delta", map[string]any{
 				"delta": textDelta.Value,
 			}); err != nil {
+				logger.Error("failed to write text delta event", "error", err)
 				return "", "", err
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
 			stopReason = string(typed.Value.StopReason)
+			logger.Debug("bedrock stream stop", "stop_reason", stopReason)
 			if err := openai.WriteEvent(w, "response.completed", map[string]any{
 				"status": stopReason,
 			}); err != nil {
+				logger.Error("failed to write response completed event", "error", err)
 				return "", "", err
 			}
 		}
@@ -268,4 +339,8 @@ func fallbackResponseID() string {
 		return "local"
 	}
 	return fmt.Sprintf("%x", buf[:])
+}
+
+func bedrockLogger(ctx context.Context) *slog.Logger {
+	return applog.FromContext(ctx).With("component", "bedrock")
 }

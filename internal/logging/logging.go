@@ -30,6 +30,9 @@ func NewLogger(level slog.Level) *slog.Logger {
 }
 
 func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, loggerContextKey{}, logger)
 }
 
