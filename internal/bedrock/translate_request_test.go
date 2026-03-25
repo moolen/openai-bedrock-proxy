@@ -262,6 +262,48 @@ func TestTranslateConversationRejectsUnsupportedNonBuiltInToolDefinitions(t *tes
 	assertInvalidRequestError(t, err)
 }
 
+func TestTranslateConversationRejectsEmptyToolNames(t *testing.T) {
+	cases := []struct {
+		name string
+		tool conversation.ToolDefinition
+	}{
+		{
+			name: "empty function tool name",
+			tool: conversation.ToolDefinition{
+				Type: "function",
+				Name: "",
+			},
+		},
+		{
+			name: "empty synthetic built-in name",
+			tool: conversation.ToolDefinition{
+				Type:    "web_search_preview",
+				Name:    "",
+				BuiltIn: true,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := conversation.Request{
+				Messages: []conversation.Message{
+					{
+						Role: "user",
+						Blocks: []conversation.Block{
+							{Type: conversation.BlockTypeText, Text: "hello"},
+						},
+					},
+				},
+				Tools: []conversation.ToolDefinition{tc.tool},
+			}
+
+			_, err := TranslateConversation("model", request, nil, nil)
+			assertInvalidRequestError(t, err)
+		})
+	}
+}
+
 func TestTranslateConversationRejectsToolChoiceWithoutTools(t *testing.T) {
 	request := conversation.Request{
 		Messages: []conversation.Message{
@@ -273,6 +315,32 @@ func TestTranslateConversationRejectsToolChoiceWithoutTools(t *testing.T) {
 			},
 		},
 		ToolChoice: conversation.ToolChoice{Type: "auto"},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateConversationRejectsToolChoiceTargetNotInToolSet(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type: "function",
+				Name: "lookup",
+			},
+		},
+		ToolChoice: conversation.ToolChoice{
+			Type: "function",
+			Name: "other_tool",
+		},
 	}
 
 	_, err := TranslateConversation("model", request, nil, nil)
@@ -304,6 +372,30 @@ func TestTranslateConversationRejectsInvalidToolCallPayloads(t *testing.T) {
 				ID:        "call_123",
 				Name:      "lookup",
 				Arguments: `{"q":`,
+			},
+		},
+		{
+			name: "arguments json array",
+			toolCall: conversation.ToolCall{
+				ID:        "call_123",
+				Name:      "lookup",
+				Arguments: `["x"]`,
+			},
+		},
+		{
+			name: "arguments json string",
+			toolCall: conversation.ToolCall{
+				ID:        "call_123",
+				Name:      "lookup",
+				Arguments: `"x"`,
+			},
+		},
+		{
+			name: "arguments json null",
+			toolCall: conversation.ToolCall{
+				ID:        "call_123",
+				Name:      "lookup",
+				Arguments: `null`,
 			},
 		},
 	}
@@ -339,6 +431,51 @@ func TestTranslateConversationRejectsMissingToolResultCallID(t *testing.T) {
 					{
 						Type: conversation.BlockTypeToolResult,
 						ToolResult: &conversation.ToolResult{
+							Output: "ok",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateConversationRejectsToolCallBlocksOutsideAssistantMessages(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_123",
+							Name:      "lookup",
+							Arguments: `{"q":"x"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := TranslateConversation("model", request, nil, nil)
+	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateConversationRejectsToolResultBlocksOutsideUserMessages(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolResult,
+						ToolResult: &conversation.ToolResult{
+							CallID: "call_123",
 							Output: "ok",
 						},
 					},

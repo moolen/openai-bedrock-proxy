@@ -109,7 +109,7 @@ func TranslateRequest(req openai.ResponsesRequest) (ConverseRequest, error) {
 func toBedrockConversationMessages(messages []conversation.Message) ([]Message, error) {
 	out := make([]Message, 0, len(messages))
 	for _, message := range messages {
-		content, err := toBedrockContentBlocks(message.Blocks)
+		content, err := toBedrockContentBlocks(message.Role, message.Blocks)
 		if err != nil {
 			return nil, err
 		}
@@ -118,13 +118,16 @@ func toBedrockConversationMessages(messages []conversation.Message) ([]Message, 
 	return out, nil
 }
 
-func toBedrockContentBlocks(blocks []conversation.Block) ([]ContentBlock, error) {
+func toBedrockContentBlocks(role string, blocks []conversation.Block) ([]ContentBlock, error) {
 	out := make([]ContentBlock, 0, len(blocks))
 	for _, block := range blocks {
 		switch block.Type {
 		case conversation.BlockTypeText:
 			out = append(out, ContentBlock{Text: block.Text})
 		case conversation.BlockTypeToolCall:
+			if role != "assistant" {
+				return nil, openai.NewInvalidRequestError("tool_call blocks are only allowed in assistant messages")
+			}
 			if block.ToolCall == nil {
 				return nil, openai.NewInvalidRequestError("assistant tool_call block is missing data")
 			}
@@ -146,6 +149,9 @@ func toBedrockContentBlocks(blocks []conversation.Block) ([]ContentBlock, error)
 				},
 			})
 		case conversation.BlockTypeToolResult:
+			if role != "user" {
+				return nil, openai.NewInvalidRequestError("tool_result blocks are only allowed in user messages")
+			}
 			if block.ToolResult == nil {
 				return nil, openai.NewInvalidRequestError("user tool_result block is missing data")
 			}
@@ -186,6 +192,9 @@ func toToolConfig(tools []conversation.ToolDefinition, choice conversation.ToolC
 	if err != nil {
 		return nil, err
 	}
+	if toolChoice != nil && toolChoice.Tool != "" && !toolSetContains(specs, toolChoice.Tool) {
+		return nil, openai.NewInvalidRequestError("tool_choice target is not present in tools")
+	}
 	return &ToolConfig{
 		Tools:      specs,
 		ToolChoice: toolChoice,
@@ -207,6 +216,9 @@ func toBedrockToolChoice(choice conversation.ToolChoice) (*ToolChoice, error) {
 
 func toToolSpec(tool conversation.ToolDefinition) (ToolSpec, error) {
 	if tool.BuiltIn {
+		if strings.TrimSpace(tool.Name) == "" {
+			return ToolSpec{}, openai.NewInvalidRequestError("built-in tool name is required")
+		}
 		schema, err := syntheticBuiltInInputSchema(tool)
 		if err != nil {
 			return ToolSpec{}, err
@@ -219,6 +231,9 @@ func toToolSpec(tool conversation.ToolDefinition) (ToolSpec, error) {
 	}
 	if tool.Type != "function" {
 		return ToolSpec{}, openai.NewInvalidRequestError("unsupported tool definition type")
+	}
+	if strings.TrimSpace(tool.Name) == "" {
+		return ToolSpec{}, openai.NewInvalidRequestError("function tool name is required")
 	}
 
 	return ToolSpec{
@@ -308,7 +323,11 @@ func parseToolUseInput(arguments string) (any, error) {
 	if err := json.Unmarshal([]byte(arguments), &input); err != nil {
 		return nil, openai.NewInvalidRequestError("assistant tool_call arguments must be valid JSON")
 	}
-	return input, nil
+	inputObject, ok := input.(map[string]any)
+	if !ok {
+		return nil, openai.NewInvalidRequestError("assistant tool_call arguments must be a JSON object")
+	}
+	return inputObject, nil
 }
 
 func toToolResultContentBlocks(output any) []ToolResultContentBlock {
@@ -322,4 +341,13 @@ func toToolResultContentBlocks(output any) []ToolResultContentBlock {
 		Type: toolResultContentTypeJSON,
 		JSON: output,
 	}}
+}
+
+func toolSetContains(tools []ToolSpec, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
 }
