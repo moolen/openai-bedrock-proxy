@@ -30,6 +30,9 @@ func ValidateChatCompletionRequest(req ChatCompletionRequest) error {
 	if err := validateChatToolChoice(req.ToolChoice); err != nil {
 		return err
 	}
+	if err := validateChatStop(req.Stop); err != nil {
+		return err
+	}
 
 	if err := validateResolvedMaxTokens(req); err != nil {
 		return err
@@ -45,9 +48,15 @@ func validateChatMessage(index int, message ChatMessage) error {
 
 	switch message.Content.Kind {
 	case ChatMessageContentKindUnset:
+		if allowsAssistantToolCallsWithoutContent(message) {
+			break
+		}
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 	case ChatMessageContentKindText:
 		if message.Content.Text == "" {
+			if allowsAssistantToolCallsWithoutContent(message) {
+				break
+			}
 			return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 		}
 	case ChatMessageContentKindParts:
@@ -63,6 +72,10 @@ func validateChatMessage(index int, message ChatMessage) error {
 	}
 
 	return nil
+}
+
+func allowsAssistantToolCallsWithoutContent(message ChatMessage) bool {
+	return message.Role == "assistant" && len(message.ToolCalls) > 0
 }
 
 func validateChatMessageParts(messageIndex int, parts []ChatMessageContentPart) error {
@@ -115,6 +128,15 @@ func validateResolvedMaxTokens(req ChatCompletionRequest) error {
 		return NewInvalidRequestError("max_tokens must be greater than 0")
 	}
 	return nil
+}
+
+func validateChatStop(stop ChatStop) error {
+	switch stop.Kind {
+	case ChatStopKindUnset, ChatStopKindString, ChatStopKindStrings:
+		return nil
+	default:
+		return NewInvalidRequestError("stop is invalid")
+	}
 }
 
 func resolvedMaxTokens(req ChatCompletionRequest) *int {

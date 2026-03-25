@@ -52,6 +52,19 @@ func TestValidateChatRequestUsesMaxCompletionTokensPrecedenceWhenMaxCompletionTo
 	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "max_completion_tokens must be greater than 0")
 }
 
+func TestValidateChatRequestRejectsInvalidStopShape(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"messages":[{"role":"user","content":"hello"}],
+		"stop":{"value":"done"}
+	}`)
+	var req ChatCompletionRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "stop is invalid")
+}
+
 func TestValidateChatRequestRejectsUnsupportedToolChoiceShape(t *testing.T) {
 	raw := []byte(`{
 		"model":"model",
@@ -117,6 +130,30 @@ func TestValidateChatRequestAcceptsFunctionToolChoiceShapeWithoutTools(t *testin
 		Model:      "model",
 		Messages:   []ChatMessage{{Role: "user", Content: ChatMessageText("hello")}},
 		ToolChoice: ChatToolChoiceFunctionName("lookup"),
+	}
+	if err := ValidateChatCompletionRequest(req); err != nil {
+		t.Fatalf("expected valid request, got %v", err)
+	}
+}
+
+func TestValidateChatRequestAcceptsAssistantToolCallsWithoutContent(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "model",
+		Messages: []ChatMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []ChatToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: ChatToolCallFunction{
+							Name:      "lookup",
+							Arguments: `{"city":"berlin"}`,
+						},
+					},
+				},
+			},
+		},
 	}
 	if err := ValidateChatCompletionRequest(req); err != nil {
 		t.Fatalf("expected valid request, got %v", err)
