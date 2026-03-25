@@ -62,65 +62,20 @@ func validateTools(tools []Tool) error {
 	return nil
 }
 
-func validateToolChoice(choice any, functionToolNames map[string]struct{}) error {
+func validateToolChoice(choice *ToolChoice, functionToolNames map[string]struct{}) error {
 	if choice == nil {
 		return nil
 	}
-	switch v := choice.(type) {
-	case string:
-		if v != "auto" {
+	if choice.Mode == "invalid" {
+		return NewInvalidRequestError("tool_choice is invalid")
+	}
+	if choice.Mode == "string" {
+		if choice.Type != "auto" {
 			return NewInvalidRequestError("tool_choice is invalid")
 		}
 		return nil
-	case map[string]any:
-		return validateToolChoiceMap(v, functionToolNames)
-	case ToolChoice:
-		return validateToolChoiceStruct(v, functionToolNames)
-	case *ToolChoice:
-		if v == nil {
-			return nil
-		}
-		return validateToolChoiceStruct(*v, functionToolNames)
-	default:
-		return NewInvalidRequestError("tool_choice is invalid")
 	}
-}
-
-func validateToolChoiceMap(choice map[string]any, functionToolNames map[string]struct{}) error {
-	typeValue, ok := choice["type"]
-	if !ok {
-		return NewInvalidRequestError("tool_choice is invalid")
-	}
-	choiceType, ok := typeValue.(string)
-	if !ok || choiceType == "" {
-		return NewInvalidRequestError("tool_choice is invalid")
-	}
-	if choiceType == "function" {
-		functionValue, ok := choice["function"]
-		if !ok {
-			return NewInvalidRequestError("tool_choice.function.name is required")
-		}
-		functionMap, ok := functionValue.(map[string]any)
-		if !ok {
-			return NewInvalidRequestError("tool_choice.function.name is required")
-		}
-		nameValue, ok := functionMap["name"]
-		if !ok {
-			return NewInvalidRequestError("tool_choice.function.name is required")
-		}
-		name, ok := nameValue.(string)
-		if !ok || name == "" {
-			return NewInvalidRequestError("tool_choice.function.name is required")
-		}
-		if _, ok := functionToolNames[name]; !ok {
-			return NewInvalidRequestError("tool_choice.function.name is not present in tools")
-		}
-		return nil
-	}
-	if _, ok := supportedBuiltInToolTypes[choiceType]; ok {
-		return nil
-	}
-	return NewInvalidRequestError("tool_choice is invalid")
+	return validateToolChoiceStruct(*choice, functionToolNames)
 }
 
 func validateToolChoiceStruct(choice ToolChoice, functionToolNames map[string]struct{}) error {

@@ -1,6 +1,9 @@
 package openai
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 const invalidResponsesInputMessage = "input must be a non-empty string or supported message object/array"
 
@@ -233,7 +236,7 @@ func TestValidateResponsesRequestAcceptsToolChoiceAuto(t *testing.T) {
 	req := ResponsesRequest{
 		Model:      "model",
 		Input:      "hi",
-		ToolChoice: "auto",
+		ToolChoice: &ToolChoice{Type: "auto", Mode: "string"},
 	}
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected tool_choice auto to be accepted, got %v", err)
@@ -247,10 +250,11 @@ func TestValidateResponsesRequestAcceptsNamedFunctionToolChoice(t *testing.T) {
 		Tools: []Tool{
 			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
 		},
-		ToolChoice: map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": "lookup",
+		ToolChoice: &ToolChoice{
+			Mode: "object",
+			Type: "function",
+			Function: &ToolChoiceFunction{
+				Name: "lookup",
 			},
 		},
 	}
@@ -266,10 +270,11 @@ func TestValidateResponsesRequestRejectsNamedFunctionToolChoiceWithMissingTool(t
 		Tools: []Tool{
 			{Type: "function", Function: &ToolFunction{Name: "lookup"}},
 		},
-		ToolChoice: map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": "different_tool",
+		ToolChoice: &ToolChoice{
+			Mode: "object",
+			Type: "function",
+			Function: &ToolChoiceFunction{
+				Name: "different_tool",
 			},
 		},
 	}
@@ -287,20 +292,82 @@ func TestValidateResponsesRequestRejectsMalformedFunctionTool(t *testing.T) {
 
 func TestValidateResponsesRequestRejectsMalformedToolChoice(t *testing.T) {
 	req := ResponsesRequest{
-		Model:      "model",
-		Input:      "hi",
-		ToolChoice: map[string]any{"type": "function", "function": map[string]any{}},
+		Model: "model",
+		Input: "hi",
+		ToolChoice: &ToolChoice{
+			Mode:     "object",
+			Type:     "function",
+			Function: &ToolChoiceFunction{},
+		},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice.function.name is required")
 }
 
 func TestValidateResponsesRequestRejectsUnmappableToolChoice(t *testing.T) {
 	req := ResponsesRequest{
-		Model:      "model",
-		Input:      "hi",
-		ToolChoice: 42,
+		Model: "model",
+		Input: "hi",
+		ToolChoice: &ToolChoice{
+			Mode: "invalid",
+		},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tool_choice is invalid")
+}
+
+func TestResponsesRequestUnmarshalAcceptsToolChoiceAutoString(t *testing.T) {
+	raw := []byte(`{"model":"model","input":"hi","tool_choice":"auto"}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if req.ToolChoice == nil {
+		t.Fatal("expected tool_choice to be present")
+	}
+	if req.ToolChoice.Mode != "string" || req.ToolChoice.Type != "auto" {
+		t.Fatalf("expected string auto tool_choice, got mode=%q type=%q", req.ToolChoice.Mode, req.ToolChoice.Type)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected decoded tool_choice auto to validate, got %v", err)
+	}
+}
+
+func TestResponsesRequestUnmarshalAcceptsNamedFunctionToolChoiceObject(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[{"type":"function","function":{"name":"lookup"}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup"}}
+	}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if req.ToolChoice == nil {
+		t.Fatal("expected tool_choice to be present")
+	}
+	if req.ToolChoice.Mode != "object" || req.ToolChoice.Type != "function" || req.ToolChoice.Function == nil || req.ToolChoice.Function.Name != "lookup" {
+		t.Fatalf("unexpected tool_choice decode: %+v", req.ToolChoice)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected decoded named function tool_choice to validate, got %v", err)
+	}
+}
+
+func TestResponsesRequestUnmarshalAcceptsBuiltInToolChoiceObject(t *testing.T) {
+	raw := []byte(`{"model":"model","input":"hi","tool_choice":{"type":"web_search_preview"}}`)
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected json unmarshal to succeed, got %v", err)
+	}
+	if req.ToolChoice == nil {
+		t.Fatal("expected tool_choice to be present")
+	}
+	if req.ToolChoice.Mode != "object" || req.ToolChoice.Type != "web_search_preview" {
+		t.Fatalf("expected built-in object tool_choice, got mode=%q type=%q", req.ToolChoice.Mode, req.ToolChoice.Type)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected decoded built-in tool_choice to validate, got %v", err)
+	}
 }
 
 func TestValidateResponsesRequestRejectsUnsupportedBuiltInTool(t *testing.T) {

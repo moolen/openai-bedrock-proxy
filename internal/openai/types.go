@@ -1,5 +1,10 @@
 package openai
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 type ToolFunction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -17,22 +22,61 @@ type ToolChoiceFunction struct {
 }
 
 type ToolChoice struct {
+	Mode     string              `json:"-"`
 	Type     string              `json:"type"`
 	Name     string              `json:"name,omitempty"`
 	Function *ToolChoiceFunction `json:"function,omitempty"`
 }
 
+func (tc *ToolChoice) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*tc = ToolChoice{}
+		return nil
+	}
+	if len(trimmed) == 0 {
+		*tc = ToolChoice{Mode: "invalid"}
+		return nil
+	}
+
+	if trimmed[0] == '"' {
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return err
+		}
+		*tc = ToolChoice{
+			Mode: "string",
+			Type: value,
+		}
+		return nil
+	}
+
+	if trimmed[0] == '{' {
+		type toolChoiceAlias ToolChoice
+		var decoded toolChoiceAlias
+		if err := json.Unmarshal(trimmed, &decoded); err != nil {
+			return err
+		}
+		*tc = ToolChoice(decoded)
+		tc.Mode = "object"
+		return nil
+	}
+
+	*tc = ToolChoice{Mode: "invalid"}
+	return nil
+}
+
 type ResponsesRequest struct {
-	Model              string   `json:"model"`
-	Input              any      `json:"input"`
-	PreviousResponseID string   `json:"previous_response_id,omitempty"`
-	Instructions       string   `json:"instructions,omitempty"`
-	Stream             bool     `json:"stream,omitempty"`
-	MaxOutputTokens    *int     `json:"max_output_tokens,omitempty"`
-	Temperature        *float64 `json:"temperature,omitempty"`
-	Tools              []Tool   `json:"tools,omitempty"`
-	ToolChoice         any      `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool    `json:"parallel_tool_calls,omitempty"`
+	Model              string      `json:"model"`
+	Input              any         `json:"input"`
+	PreviousResponseID string      `json:"previous_response_id,omitempty"`
+	Instructions       string      `json:"instructions,omitempty"`
+	Stream             bool        `json:"stream,omitempty"`
+	MaxOutputTokens    *int        `json:"max_output_tokens,omitempty"`
+	Temperature        *float64    `json:"temperature,omitempty"`
+	Tools              []Tool      `json:"tools,omitempty"`
+	ToolChoice         *ToolChoice `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool       `json:"parallel_tool_calls,omitempty"`
 }
 
 type ContentItem struct {
