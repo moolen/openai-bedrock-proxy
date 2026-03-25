@@ -329,6 +329,36 @@ func TestTranslateConversationRejectsToolChoiceWithoutTools(t *testing.T) {
 	assertInvalidRequestError(t, err)
 }
 
+func TestTranslateConversationAcceptsNameOnlySpecificToolChoice(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "hello"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type: "function",
+				Name: "lookup",
+			},
+		},
+		ToolChoice: conversation.ToolChoice{
+			Name: "lookup",
+		},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ToolConfig == nil || got.ToolConfig.ToolChoice == nil || got.ToolConfig.ToolChoice.Tool != "lookup" {
+		t.Fatalf("expected name-only specific tool choice to map, got %#v", got.ToolConfig)
+	}
+}
+
 func TestTranslateConversationRejectsMalformedSpecificToolChoiceShape(t *testing.T) {
 	request := conversation.Request{
 		Messages: []conversation.Message{

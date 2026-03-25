@@ -207,7 +207,7 @@ func toBedrockToolChoice(choice conversation.ToolChoice, tools []conversation.To
 		return nil, nil
 	case choice.Type == "auto":
 		return &ToolChoice{Auto: true}, nil
-	case choice.Name != "" && namedToolChoiceExists(choice, tools):
+	case choice.Name != "" && namedToolChoiceAllowed(choice, tools):
 		return &ToolChoice{Tool: choice.Name}, nil
 	default:
 		return nil, openai.NewInvalidRequestError("unsupported tool_choice")
@@ -355,9 +355,12 @@ func toolSetContains(tools []ToolSpec, name string) bool {
 	return false
 }
 
-func namedToolChoiceExists(choice conversation.ToolChoice, tools []conversation.ToolDefinition) bool {
+func namedToolChoiceAllowed(choice conversation.ToolChoice, tools []conversation.ToolDefinition) bool {
 	for _, tool := range tools {
-		if tool.Name == choice.Name && tool.Type == choice.Type {
+		if tool.Name != choice.Name {
+			continue
+		}
+		if choice.Type == "" || tool.Type == choice.Type {
 			return true
 		}
 	}
