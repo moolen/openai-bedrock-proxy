@@ -78,6 +78,9 @@ func TestWriteChatStreamEmitsToolCallAndUsageChunks(t *testing.T) {
 	if !strings.Contains(got, "\"arguments\":\"{\\\"q\\\":\\\"weather\\\"}\"") {
 		t.Fatalf("expected tool call arguments delta, got %s", got)
 	}
+	if strings.Contains(got, "\"name\":\"\"") {
+		t.Fatalf("expected argument-only tool-call deltas to omit empty function.name, got %s", got)
+	}
 	if !strings.Contains(got, "\"finish_reason\":\"tool_calls\"") {
 		t.Fatalf("expected tool finish reason, got %s", got)
 	}

@@ -10,7 +10,7 @@ type StreamOptions struct {
 }
 
 type ChatToolCallFunction struct {
-	Name      string `json:"name"`
+	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 }
 
