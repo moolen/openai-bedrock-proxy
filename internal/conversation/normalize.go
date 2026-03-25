@@ -23,6 +23,9 @@ func NormalizeRequest(req openai.ResponsesRequest) (Request, error) {
 	if req.Instructions != "" {
 		system = append(system, req.Instructions)
 	}
+	if len(messages) == 0 {
+		return Request{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+	}
 	return Request{
 		System:   system,
 		Messages: messages,

@@ -188,3 +188,38 @@ func TestNormalizeRequestRejectsMalformedInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeRequestRejectsStructuredInputWithoutPersistedMessages(t *testing.T) {
+	cases := []struct {
+		name  string
+		input any
+	}{
+		{
+			name:  "system only",
+			input: []map[string]any{{"role": "system", "content": "sys"}},
+		},
+		{
+			name:  "developer only",
+			input: []map[string]any{{"role": "developer", "content": "dev"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := openai.ResponsesRequest{
+				Model: "model",
+				Input: tc.input,
+			}
+
+			_, err := NormalizeRequest(req)
+			if err == nil {
+				t.Fatalf("expected error for structured input without persisted messages")
+			}
+
+			var invalid openai.InvalidRequestError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("expected invalid request error, got %T", err)
+			}
+		})
+	}
+}
