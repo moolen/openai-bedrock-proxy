@@ -12,8 +12,14 @@ import (
 
 type ContentBlock struct {
 	Text       string
+	Image      *ImageBlock
 	ToolUse    *ToolUseBlock
 	ToolResult *ToolResultBlock
+}
+
+type ImageBlock struct {
+	Format string
+	Bytes  []byte
 }
 
 type ToolUseBlock struct {

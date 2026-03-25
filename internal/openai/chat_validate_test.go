@@ -246,6 +246,41 @@ func TestValidateChatRequestAcceptsStructuredContentArray(t *testing.T) {
 	}
 }
 
+func TestValidateChatRequestAcceptsTextAndImageParts(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "model",
+		Messages: []ChatMessage{{
+			Role: "user",
+			Content: ChatMessageContent{
+				Kind: ChatMessageContentKindParts,
+				Parts: []ChatMessageContentPart{
+					{Type: "text", Text: "describe this"},
+					{Type: "image_url", ImageURL: map[string]any{"url": "data:image/png;base64,aGVsbG8="}},
+				},
+			},
+		}},
+	}
+	if err := ValidateChatCompletionRequest(req); err != nil {
+		t.Fatalf("expected valid multimodal request, got %v", err)
+	}
+}
+
+func TestValidateChatRequestRejectsImagePartsForAssistantMessages(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "model",
+		Messages: []ChatMessage{{
+			Role: "assistant",
+			Content: ChatMessageContent{
+				Kind: ChatMessageContentKindParts,
+				Parts: []ChatMessageContentPart{
+					{Type: "image_url", ImageURL: map[string]any{"url": "data:image/png;base64,aGVsbG8="}},
+				},
+			},
+		}},
+	}
+	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "messages[0].content[0].type is unsupported")
+}
+
 func TestChatMessageContentMarshalUsesOpenAIWireShape(t *testing.T) {
 	resp := ChatCompletionResponse{
 		ID:      "chatcmpl_123",

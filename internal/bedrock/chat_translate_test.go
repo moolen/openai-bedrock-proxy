@@ -1,7 +1,10 @@
 package bedrock
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -18,7 +21,7 @@ func TestTranslateChatRequestBuildsSystemUserAndToolResultBlocks(t *testing.T) {
 		},
 	}
 
-	got, err := TranslateChatRequest(req, fakeCatalogRecord("model"))
+	got, err := TranslateChatRequest(context.Background(), req, fakeCatalogRecord("model"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +88,7 @@ func TestTranslateChatRequestBuildsAssistantToolUseAndToolConfig(t *testing.T) {
 		ToolChoice: openai.ChatToolChoiceString("auto"),
 	}
 
-	got, err := TranslateChatRequest(req, fakeCatalogRecord("model"))
+	got, err := TranslateChatRequest(context.Background(), req, fakeCatalogRecord("model"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,8 +136,99 @@ func TestTranslateChatRequestRejectsRequiredToolChoice(t *testing.T) {
 		ToolChoice: openai.ChatToolChoiceString("required"),
 	}
 
-	_, err := TranslateChatRequest(req, fakeCatalogRecord("model"))
+	_, err := TranslateChatRequest(context.Background(), req, fakeCatalogRecord("model"))
 	assertInvalidRequestError(t, err)
+}
+
+func TestTranslateChatRequestBuildsMixedTextAndImageBlocksForMultimodalModel(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model: "model",
+		Messages: []openai.ChatMessage{{
+			Role: "user",
+			Content: openai.ChatMessageContent{
+				Kind: openai.ChatMessageContentKindParts,
+				Parts: []openai.ChatMessageContentPart{
+					{Type: "text", Text: "describe this"},
+					{Type: "image_url", ImageURL: map[string]any{"url": testPNGDataURL(t)}},
+				},
+			},
+		}},
+	}
+
+	got, err := TranslateChatRequest(context.Background(), req, fakeMultimodalCatalogRecord("model"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Role != "user" {
+		t.Fatalf("expected translated user message, got %#v", got.Messages)
+	}
+	if len(got.Messages[0].Content) != 2 {
+		t.Fatalf("expected mixed text and image blocks, got %#v", got.Messages[0].Content)
+	}
+	if got.Messages[0].Content[0].Text != "describe this" {
+		t.Fatalf("expected leading text block, got %#v", got.Messages[0].Content[0])
+	}
+	if got.Messages[0].Content[1].Image == nil {
+		t.Fatalf("expected image block, got %#v", got.Messages[0].Content[1])
+	}
+	if got.Messages[0].Content[1].Image.Format != "png" {
+		t.Fatalf("expected png image format, got %#v", got.Messages[0].Content[1].Image)
+	}
+	if !bytes.Equal(got.Messages[0].Content[1].Image.Bytes, testPNGBytes(t)) {
+		t.Fatalf("expected decoded image bytes, got %#v", got.Messages[0].Content[1].Image.Bytes)
+	}
+}
+
+func TestTranslateChatRequestRejectsImageForTextOnlyModel(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model: "text-only-model",
+		Messages: []openai.ChatMessage{{
+			Role: "user",
+			Content: openai.ChatMessageContent{
+				Kind: openai.ChatMessageContentKindParts,
+				Parts: []openai.ChatMessageContentPart{
+					{Type: "image_url", ImageURL: map[string]any{"url": testPNGDataURL(t)}},
+				},
+			},
+		}},
+	}
+
+	_, err := TranslateChatRequest(context.Background(), req, fakeCatalogRecord("text-only-model"))
+	assertInvalidRequestError(t, err)
+	if !strings.Contains(err.Error(), "multimodal message is not supported by this model") {
+		t.Fatalf("expected multimodal rejection message, got %v", err)
+	}
+}
+
+func TestTranslateChatRequestPropagatesContextCancellationDuringImageFetch(t *testing.T) {
+	previousFetcher := defaultImageFetcher
+	defaultImageFetcher = func(ctx context.Context, _ string) ([]byte, string, error) {
+		return nil, "", ctx.Err()
+	}
+	t.Cleanup(func() {
+		defaultImageFetcher = previousFetcher
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := openai.ChatCompletionRequest{
+		Model: "model",
+		Messages: []openai.ChatMessage{{
+			Role: "user",
+			Content: openai.ChatMessageContent{
+				Kind: openai.ChatMessageContentKindParts,
+				Parts: []openai.ChatMessageContentPart{
+					{Type: "image_url", ImageURL: map[string]any{"url": "https://example.com/cat.png"}},
+				},
+			},
+		}},
+	}
+
+	_, err := TranslateChatRequest(ctx, req, fakeMultimodalCatalogRecord("model"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation to propagate, got %v", err)
+	}
 }
 
 func TestTranslateChatResponseBuildsToolCalls(t *testing.T) {
@@ -217,5 +311,13 @@ func fakeCatalogRecord(id string) ModelRecord {
 		ID:              id,
 		ModelKind:       modelKindFoundationModel,
 		InputModalities: []string{"TEXT"},
+	}
+}
+
+func fakeMultimodalCatalogRecord(id string) ModelRecord {
+	return ModelRecord{
+		ID:              id,
+		ModelKind:       modelKindFoundationModel,
+		InputModalities: []string{"TEXT", "IMAGE"},
 	}
 }

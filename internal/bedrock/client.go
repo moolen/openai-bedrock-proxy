@@ -347,6 +347,15 @@ func toBedrockMessages(messages []Message) []bedrocktypes.Message {
 		content := make([]bedrocktypes.ContentBlock, 0, len(message.Content))
 		for _, block := range message.Content {
 			switch {
+			case block.Image != nil:
+				content = append(content, &bedrocktypes.ContentBlockMemberImage{
+					Value: bedrocktypes.ImageBlock{
+						Format: toSDKImageFormat(block.Image.Format),
+						Source: &bedrocktypes.ImageSourceMemberBytes{
+							Value: append([]byte(nil), block.Image.Bytes...),
+						},
+					},
+				})
 			case block.ToolUse != nil:
 				content = append(content, &bedrocktypes.ContentBlockMemberToolUse{
 					Value: bedrocktypes.ToolUseBlock{
@@ -455,6 +464,21 @@ func toSDKToolResultContent(content []ToolResultContentBlock) []bedrocktypes.Too
 		}
 	}
 	return out
+}
+
+func toSDKImageFormat(format string) bedrocktypes.ImageFormat {
+	switch format {
+	case "png":
+		return bedrocktypes.ImageFormatPng
+	case "jpeg":
+		return bedrocktypes.ImageFormatJpeg
+	case "gif":
+		return bedrocktypes.ImageFormatGif
+	case "webp":
+		return bedrocktypes.ImageFormatWebp
+	default:
+		panic(fmt.Sprintf("unknown image format: %q", format))
+	}
 }
 
 func extractOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {

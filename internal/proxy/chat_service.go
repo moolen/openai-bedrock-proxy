@@ -32,7 +32,7 @@ func (s *ChatService) Complete(ctx context.Context, req openai.ChatCompletionReq
 		return openai.ChatCompletionResponse{}, err
 	}
 
-	translated, err := bedrock.TranslateChatRequest(req, record)
+	translated, err := bedrock.TranslateChatRequest(ctx, req, record)
 	if err != nil {
 		return openai.ChatCompletionResponse{}, err
 	}
@@ -55,7 +55,7 @@ func (s *ChatService) Stream(ctx context.Context, req openai.ChatCompletionReque
 		return err
 	}
 
-	translated, err := bedrock.TranslateChatRequest(req, record)
+	translated, err := bedrock.TranslateChatRequest(ctx, req, record)
 	if err != nil {
 		return err
 	}

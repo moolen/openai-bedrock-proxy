@@ -1,6 +1,9 @@
 package openai
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 var supportedChatMessageRoles = map[string]struct{}{
 	"system":    {},
@@ -68,7 +71,7 @@ func validateChatMessage(index int, message ChatMessage) error {
 			return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 		}
 	case ChatMessageContentKindParts:
-		if err := validateChatMessageParts(index, message.Content.Parts); err != nil {
+		if err := validateChatMessageParts(index, message.Role, message.Content.Parts); err != nil {
 			return err
 		}
 	default:
@@ -98,19 +101,19 @@ func validateAssistantToolCalls(messageIndex int, toolCalls []ChatToolCall) erro
 	return nil
 }
 
-func validateChatMessageParts(messageIndex int, parts []ChatMessageContentPart) error {
+func validateChatMessageParts(messageIndex int, role string, parts []ChatMessageContentPart) error {
 	if len(parts) == 0 {
 		return NewInvalidRequestError("messages[" + strconv.Itoa(messageIndex) + "].content is invalid")
 	}
 	for partIndex, part := range parts {
-		if err := validateChatMessagePart(messageIndex, partIndex, part); err != nil {
+		if err := validateChatMessagePart(messageIndex, partIndex, role, part); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateChatMessagePart(messageIndex int, partIndex int, part ChatMessageContentPart) error {
+func validateChatMessagePart(messageIndex int, partIndex int, role string, part ChatMessageContentPart) error {
 	basePath := "messages[" + strconv.Itoa(messageIndex) + "].content[" + strconv.Itoa(partIndex) + "]"
 	switch part.Type {
 	case "text":
@@ -119,6 +122,9 @@ func validateChatMessagePart(messageIndex int, partIndex int, part ChatMessageCo
 		}
 		return nil
 	case "image_url":
+		if role != "user" {
+			return NewInvalidRequestError(basePath + ".type is unsupported")
+		}
 		if part.ImageURL == nil {
 			return NewInvalidRequestError(basePath + ".image_url.url is required")
 		}
@@ -127,7 +133,7 @@ func validateChatMessagePart(messageIndex int, partIndex int, part ChatMessageCo
 			return NewInvalidRequestError(basePath + ".image_url.url is required")
 		}
 		url, ok := urlValue.(string)
-		if !ok || url == "" {
+		if !ok || strings.TrimSpace(url) == "" {
 			return NewInvalidRequestError(basePath + ".image_url.url is required")
 		}
 		return nil

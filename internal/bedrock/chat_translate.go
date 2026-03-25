@@ -1,7 +1,9 @@
 package bedrock
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -11,7 +13,7 @@ import (
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
-func TranslateChatRequest(req openai.ChatCompletionRequest, model ModelRecord) (ConverseRequest, error) {
+func TranslateChatRequest(ctx context.Context, req openai.ChatCompletionRequest, model ModelRecord) (ConverseRequest, error) {
 	out := ConverseRequest{
 		ModelID:  req.Model,
 		System:   make([]string, 0, len(req.Messages)),
@@ -24,13 +26,13 @@ func TranslateChatRequest(req openai.ChatCompletionRequest, model ModelRecord) (
 	for idx, message := range req.Messages {
 		switch message.Role {
 		case "system", "developer":
-			systemText, err := systemTextFromChatMessage(idx, message)
+			systemText, err := systemTextFromChatMessage(ctx, idx, message, model)
 			if err != nil {
 				return ConverseRequest{}, err
 			}
 			out.System = append(out.System, systemText)
 		case "user":
-			content, err := chatMessageContentBlocks(idx, message.Content, false)
+			content, err := chatMessageContentBlocks(ctx, idx, message.Content, false, model, true)
 			if err != nil {
 				return ConverseRequest{}, err
 			}
@@ -39,7 +41,7 @@ func TranslateChatRequest(req openai.ChatCompletionRequest, model ModelRecord) (
 				Content: content,
 			})
 		case "assistant":
-			content, err := assistantChatContentBlocks(idx, message)
+			content, err := assistantChatContentBlocks(ctx, idx, message, model)
 			if err != nil {
 				return ConverseRequest{}, err
 			}
@@ -48,7 +50,7 @@ func TranslateChatRequest(req openai.ChatCompletionRequest, model ModelRecord) (
 				Content: content,
 			})
 		case "tool":
-			content, err := toolResultContentBlocks(idx, message)
+			content, err := toolResultContentBlocks(ctx, idx, message, model)
 			if err != nil {
 				return ConverseRequest{}, err
 			}
@@ -160,8 +162,8 @@ func mapChatFinishReason(stopReason string) string {
 	}
 }
 
-func systemTextFromChatMessage(index int, message openai.ChatMessage) (string, error) {
-	content, err := chatMessageContentBlocks(index, message.Content, false)
+func systemTextFromChatMessage(ctx context.Context, index int, message openai.ChatMessage, model ModelRecord) (string, error) {
+	content, err := chatMessageContentBlocks(ctx, index, message.Content, false, model, false)
 	if err != nil {
 		return "", err
 	}
@@ -175,8 +177,8 @@ func systemTextFromChatMessage(index int, message openai.ChatMessage) (string, e
 	return builder.String(), nil
 }
 
-func assistantChatContentBlocks(index int, message openai.ChatMessage) ([]ContentBlock, error) {
-	content, err := chatMessageContentBlocks(index, message.Content, true)
+func assistantChatContentBlocks(ctx context.Context, index int, message openai.ChatMessage, model ModelRecord) ([]ContentBlock, error) {
+	content, err := chatMessageContentBlocks(ctx, index, message.Content, true, model, false)
 	if err != nil {
 		return nil, err
 	}
@@ -211,12 +213,12 @@ func assistantChatContentBlocks(index int, message openai.ChatMessage) ([]Conten
 	return content, nil
 }
 
-func toolResultContentBlocks(index int, message openai.ChatMessage) ([]ContentBlock, error) {
+func toolResultContentBlocks(ctx context.Context, index int, message openai.ChatMessage, model ModelRecord) ([]ContentBlock, error) {
 	if strings.TrimSpace(message.ToolCallID) == "" {
 		return nil, openai.NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].tool_call_id is required")
 	}
 
-	content, err := chatMessageContentBlocks(index, message.Content, false)
+	content, err := chatMessageContentBlocks(ctx, index, message.Content, false, model, false)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +238,7 @@ func toolResultContentBlocks(index int, message openai.ChatMessage) ([]ContentBl
 	}}, nil
 }
 
-func chatMessageContentBlocks(index int, content openai.ChatMessageContent, allowUnset bool) ([]ContentBlock, error) {
+func chatMessageContentBlocks(ctx context.Context, index int, content openai.ChatMessageContent, allowUnset bool, model ModelRecord, allowImages bool) ([]ContentBlock, error) {
 	switch content.Kind {
 	case openai.ChatMessageContentKindUnset:
 		if allowUnset {
@@ -257,18 +259,70 @@ func chatMessageContentBlocks(index int, content openai.ChatMessageContent, allo
 		}
 		blocks := make([]ContentBlock, 0, len(content.Parts))
 		for partIndex, part := range content.Parts {
-			if part.Type != "text" {
+			switch part.Type {
+			case "text":
+				if strings.TrimSpace(part.Text) == "" {
+					return nil, openai.NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content[" + strconv.Itoa(partIndex) + "].text is required")
+				}
+				blocks = append(blocks, ContentBlock{Text: part.Text})
+			case "image_url":
+				if !allowImages {
+					return nil, openai.NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content[" + strconv.Itoa(partIndex) + "].type is unsupported")
+				}
+				if !modelSupportsInputModality(model, "IMAGE") {
+					return nil, openai.NewInvalidRequestError("multimodal message is not supported by this model")
+				}
+				image, err := imageContentBlock(ctx, index, partIndex, part)
+				if err != nil {
+					return nil, err
+				}
+				blocks = append(blocks, image)
+			default:
 				return nil, openai.NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content[" + strconv.Itoa(partIndex) + "].type is unsupported")
 			}
-			if strings.TrimSpace(part.Text) == "" {
-				return nil, openai.NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content[" + strconv.Itoa(partIndex) + "].text is required")
-			}
-			blocks = append(blocks, ContentBlock{Text: part.Text})
 		}
 		return blocks, nil
 	default:
 		return nil, openai.NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is invalid")
 	}
+}
+
+func imageContentBlock(ctx context.Context, messageIndex int, partIndex int, part openai.ChatMessageContentPart) (ContentBlock, error) {
+	basePath := "messages[" + strconv.Itoa(messageIndex) + "].content[" + strconv.Itoa(partIndex) + "].image_url.url"
+	if part.ImageURL == nil {
+		return ContentBlock{}, openai.NewInvalidRequestError(basePath + " is required")
+	}
+	rawURL, ok := part.ImageURL["url"].(string)
+	if !ok || strings.TrimSpace(rawURL) == "" {
+		return ContentBlock{}, openai.NewInvalidRequestError(basePath + " is required")
+	}
+
+	data, contentType, err := ParseImageURL(ctx, rawURL, nil)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ContentBlock{}, err
+		}
+		return ContentBlock{}, openai.NewInvalidRequestError(basePath + " is invalid")
+	}
+	format, err := imageFormatFromContentType(contentType)
+	if err != nil {
+		return ContentBlock{}, openai.NewInvalidRequestError(basePath + " is invalid")
+	}
+	return ContentBlock{
+		Image: &ImageBlock{
+			Format: format,
+			Bytes:  data,
+		},
+	}, nil
+}
+
+func modelSupportsInputModality(model ModelRecord, want string) bool {
+	for _, modality := range model.InputModalities {
+		if strings.EqualFold(strings.TrimSpace(modality), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeChatTools(tools []openai.Tool) []conversation.ToolDefinition {

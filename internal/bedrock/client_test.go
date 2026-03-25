@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -358,6 +359,56 @@ func TestClientRespondConversationBuildsToolAwareConverseInput(t *testing.T) {
 	}
 	if builtInSchema["x-openai-tool-type"] != "web_search_preview" {
 		t.Fatalf("expected built-in schema metadata, got %#v", builtInSchema)
+	}
+}
+
+func TestClientChatBuildsConverseInputWithImageBlocks(t *testing.T) {
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberText{Value: "done"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	_, err := client.Chat(context.Background(), ConverseRequest{
+		ModelID: "model-id",
+		Messages: []Message{{
+			Role: "user",
+			Content: []ContentBlock{
+				{Text: "describe this"},
+				{Image: &ImageBlock{Format: "png", Bytes: []byte("hello")}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastConverseInput == nil {
+		t.Fatal("expected converse input to be captured")
+	}
+	if len(runtime.lastConverseInput.Messages) != 1 || len(runtime.lastConverseInput.Messages[0].Content) != 2 {
+		t.Fatalf("expected mixed content blocks in SDK request, got %#v", runtime.lastConverseInput.Messages)
+	}
+
+	imageBlock, ok := runtime.lastConverseInput.Messages[0].Content[1].(*bedrocktypes.ContentBlockMemberImage)
+	if !ok {
+		t.Fatalf("expected SDK image content block, got %T", runtime.lastConverseInput.Messages[0].Content[1])
+	}
+	if imageBlock.Value.Format != bedrocktypes.ImageFormatPng {
+		t.Fatalf("expected png SDK image format, got %#v", imageBlock.Value)
+	}
+	source, ok := imageBlock.Value.Source.(*bedrocktypes.ImageSourceMemberBytes)
+	if !ok {
+		t.Fatalf("expected byte-backed image source, got %T", imageBlock.Value.Source)
+	}
+	if !bytes.Equal(source.Value, []byte("hello")) {
+		t.Fatalf("expected SDK image bytes to survive, got %#v", source.Value)
 	}
 }
 
