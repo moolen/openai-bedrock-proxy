@@ -45,22 +45,21 @@ func validateChatMessage(index int, message ChatMessage) error {
 	if _, ok := supportedChatMessageRoles[message.Role]; !ok {
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].role is invalid")
 	}
+	if message.Role == "assistant" && len(message.ToolCalls) > 0 {
+		if err := validateAssistantToolCalls(index, message.ToolCalls); err != nil {
+			return err
+		}
+	}
 
 	switch message.Content.Kind {
 	case ChatMessageContentKindUnset:
 		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
-			if err := validateAssistantReplayToolCallsWithoutContent(index, message); err != nil {
-				return err
-			}
 			break
 		}
 		return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
 	case ChatMessageContentKindText:
 		if message.Content.Text == "" {
 			if message.Role == "assistant" && len(message.ToolCalls) > 0 {
-				if err := validateAssistantReplayToolCallsWithoutContent(index, message); err != nil {
-					return err
-				}
 				break
 			}
 			return NewInvalidRequestError("messages[" + strconv.Itoa(index) + "].content is required")
@@ -80,11 +79,8 @@ func validateChatMessage(index int, message ChatMessage) error {
 	return nil
 }
 
-func validateAssistantReplayToolCallsWithoutContent(messageIndex int, message ChatMessage) error {
-	if message.Role != "assistant" || len(message.ToolCalls) == 0 {
-		return NewInvalidRequestError("messages[" + strconv.Itoa(messageIndex) + "].content is required")
-	}
-	for toolCallIndex, toolCall := range message.ToolCalls {
+func validateAssistantToolCalls(messageIndex int, toolCalls []ChatToolCall) error {
+	for toolCallIndex, toolCall := range toolCalls {
 		path := "messages[" + strconv.Itoa(messageIndex) + "].tool_calls[" + strconv.Itoa(toolCallIndex) + "]"
 		if toolCall.ID == "" {
 			return NewInvalidRequestError(path + ".id is required")
