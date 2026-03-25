@@ -180,6 +180,9 @@ func WriteChatCompletionsStream(stream streamEvents, responseID string, model st
 				}
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
+			if err := emitRoleChunk(); err != nil {
+				return err
+			}
 			finishReason := mapChatFinishReason(string(typed.Value.StopReason))
 			if err := writeChatChunk(w, openai.ChatCompletionChunk{
 				ID:      responseID,

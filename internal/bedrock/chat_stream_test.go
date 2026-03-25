@@ -106,6 +106,31 @@ func TestWriteChatStreamSkipsUsageChunkWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestWriteChatStreamEmitsAssistantRoleBeforeStopWithoutContent(t *testing.T) {
+	stream := newFakeChatStream(
+		messageStop("end_turn"),
+	)
+	var buf bytes.Buffer
+
+	err := WriteChatCompletionsStream(stream, "chatcmpl_123", "model", false, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := buf.String()
+	rolePos := strings.Index(got, "\"role\":\"assistant\"")
+	finishPos := strings.Index(got, "\"finish_reason\":\"stop\"")
+	if rolePos == -1 {
+		t.Fatalf("expected assistant role chunk before stop-only stream completion, got %s", got)
+	}
+	if finishPos == -1 {
+		t.Fatalf("expected stop finish reason, got %s", got)
+	}
+	if rolePos > finishPos {
+		t.Fatalf("expected assistant role chunk before finish chunk, got %s", got)
+	}
+}
+
 type fakeChatStream struct {
 	events chan bedrocktypes.ConverseStreamOutput
 	err    error
