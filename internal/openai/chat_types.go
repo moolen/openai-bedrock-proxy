@@ -83,6 +83,23 @@ func (c *ChatMessageContent) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (c ChatMessageContent) MarshalJSON() ([]byte, error) {
+	switch c.Kind {
+	case ChatMessageContentKindUnset:
+		return []byte("null"), nil
+	case ChatMessageContentKindText:
+		return json.Marshal(c.Text)
+	case ChatMessageContentKindParts:
+		return json.Marshal(c.Parts)
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (c ChatMessageContent) IsZero() bool {
+	return c.Kind == ChatMessageContentKindUnset
+}
+
 type ChatMessage struct {
 	Role       string             `json:"role"`
 	Content    ChatMessageContent `json:"content,omitempty"`
@@ -145,6 +162,23 @@ func (s *ChatStop) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (s ChatStop) MarshalJSON() ([]byte, error) {
+	switch s.Kind {
+	case ChatStopKindUnset:
+		return []byte("null"), nil
+	case ChatStopKindString:
+		return json.Marshal(s.Value)
+	case ChatStopKindStrings:
+		return json.Marshal(s.Values)
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (s ChatStop) IsZero() bool {
+	return s.Kind == ChatStopKindUnset
+}
+
 type ChatToolChoiceKind string
 
 const (
@@ -205,19 +239,88 @@ func (c *ChatToolChoice) UnmarshalJSON(data []byte) error {
 	}
 
 	if trimmed[0] == '{' {
-		var functionChoice ChatToolChoiceFunction
-		if err := json.Unmarshal(trimmed, &functionChoice); err != nil {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
 			return err
 		}
+
+		if len(raw) != 2 {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+
+		rawType, ok := raw["type"]
+		if !ok {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+		rawFunction, ok := raw["function"]
+		if !ok {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+
+		var typeValue string
+		if err := json.Unmarshal(rawType, &typeValue); err != nil {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+
+		var rawFunctionObject map[string]json.RawMessage
+		if err := json.Unmarshal(rawFunction, &rawFunctionObject); err != nil {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+		if len(rawFunctionObject) != 1 {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+		rawName, ok := rawFunctionObject["name"]
+		if !ok {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+
+		var functionName string
+		if err := json.Unmarshal(rawName, &functionName); err != nil {
+			*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
+			return nil
+		}
+
 		*c = ChatToolChoice{
-			Kind:          ChatToolChoiceKindFunction,
-			FunctionValue: &functionChoice,
+			Kind: ChatToolChoiceKindFunction,
+			FunctionValue: &ChatToolChoiceFunction{
+				Type: typeValue,
+				Function: ToolChoiceFunction{
+					Name: functionName,
+				},
+			},
 		}
 		return nil
 	}
 
 	*c = ChatToolChoice{Kind: ChatToolChoiceKindInvalid}
 	return nil
+}
+
+func (c ChatToolChoice) MarshalJSON() ([]byte, error) {
+	switch c.Kind {
+	case ChatToolChoiceKindUnset:
+		return []byte("null"), nil
+	case ChatToolChoiceKindString:
+		return json.Marshal(c.StringValue)
+	case ChatToolChoiceKindFunction:
+		if c.FunctionValue == nil {
+			return []byte("null"), nil
+		}
+		return json.Marshal(c.FunctionValue)
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (c ChatToolChoice) IsZero() bool {
+	return c.Kind == ChatToolChoiceKindUnset
 }
 
 type ChatCompletionRequest struct {
