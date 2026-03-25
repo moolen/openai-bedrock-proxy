@@ -65,6 +65,27 @@ func TestValidateChatRequestRejectsInvalidStopShape(t *testing.T) {
 	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "stop is invalid")
 }
 
+func TestValidateChatRequestRejectsInvalidReasoningEffort(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model:           "model",
+		Messages:        []ChatMessage{{Role: "user", Content: ChatMessageText("hello")}},
+		ReasoningEffort: "HIGH",
+	}
+	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "reasoning_effort is invalid")
+}
+
+func TestValidateChatRequestRejectsConflictingReasoningControls(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model:           "model",
+		Messages:        []ChatMessage{{Role: "user", Content: ChatMessageText("hello")}},
+		ReasoningEffort: "low",
+		ExtraBody: map[string]any{
+			"thinking": map[string]any{"type": "enabled"},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateChatCompletionRequest(req), "reasoning_effort cannot be combined with provider-specific reasoning controls")
+}
+
 func TestValidateChatRequestRejectsUnsupportedToolChoiceShape(t *testing.T) {
 	raw := []byte(`{
 		"model":"model",

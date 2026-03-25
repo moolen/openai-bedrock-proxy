@@ -231,6 +231,198 @@ func TestTranslateChatRequestPropagatesContextCancellationDuringImageFetch(t *te
 	}
 }
 
+func TestTranslateChatRequestUsesMaxCompletionTokensForReasoningBudget(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:               "anthropic.claude-sonnet",
+		Messages:            []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		MaxTokens:           intPtr(256),
+		MaxCompletionTokens: intPtr(2048),
+		TopP:                float64Ptr(0.8),
+		ReasoningEffort:     "low",
+	}
+
+	got, err := TranslateChatRequest(context.Background(), req, fakeReasoningModel("anthropic.claude-sonnet"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.MaxTokens == nil || *got.MaxTokens != 2048 {
+		t.Fatalf("expected max_completion_tokens precedence, got %#v", got.MaxTokens)
+	}
+	if got.TopP != nil {
+		t.Fatalf("expected reasoning request to drop top_p, got %#v", got.TopP)
+	}
+	reasoning, ok := got.AdditionalModelRequestFields["reasoning_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reasoning_config map, got %#v", got.AdditionalModelRequestFields)
+	}
+	if reasoning["type"] != "enabled" || reasoning["budget_tokens"] != 614 {
+		t.Fatalf("unexpected reasoning config, got %#v", reasoning)
+	}
+}
+
+func TestTranslateChatRequestRejectsUnsupportedReasoningModel(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:           "model",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		MaxTokens:       intPtr(512),
+		ReasoningEffort: "high",
+	}
+
+	_, err := TranslateChatRequest(context.Background(), req, fakeCatalogRecord("model"))
+	assertInvalidRequestError(t, err)
+	if !strings.Contains(err.Error(), "reasoning_effort is not supported by this model") {
+		t.Fatalf("expected unsupported reasoning error, got %v", err)
+	}
+}
+
+func TestTranslateChatRequestRejectsLegacyClaudeReasoningModel(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:           "anthropic.claude-v2",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		MaxTokens:       intPtr(512),
+		ReasoningEffort: "high",
+	}
+
+	_, err := TranslateChatRequest(context.Background(), req, fakeLegacyClaudeModel("anthropic.claude-v2"))
+	assertInvalidRequestError(t, err)
+	if !strings.Contains(err.Error(), "reasoning_effort is not supported by this model") {
+		t.Fatalf("expected legacy Claude reasoning rejection, got %v", err)
+	}
+}
+
+func TestTranslateChatRequestRejectsInvalidReasoningEffort(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:           "anthropic.claude-sonnet",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		MaxTokens:       intPtr(512),
+		ReasoningEffort: "HIGH",
+	}
+
+	_, err := TranslateChatRequest(context.Background(), req, fakeReasoningModel("anthropic.claude-sonnet"))
+	assertInvalidRequestError(t, err)
+	if !strings.Contains(err.Error(), "reasoning_effort is invalid") {
+		t.Fatalf("expected invalid reasoning_effort error, got %v", err)
+	}
+}
+
+func TestTranslateChatRequestRejectsConflictingReasoningControls(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:           "anthropic.claude-sonnet",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		MaxTokens:       intPtr(512),
+		ReasoningEffort: "low",
+		ExtraBody: map[string]any{
+			"thinking": map[string]any{"type": "enabled"},
+		},
+	}
+
+	_, err := TranslateChatRequest(context.Background(), req, fakeReasoningModel("anthropic.claude-sonnet"))
+	assertInvalidRequestError(t, err)
+	if !strings.Contains(err.Error(), "reasoning_effort cannot be combined with provider-specific reasoning controls") {
+		t.Fatalf("expected reasoning control conflict error, got %v", err)
+	}
+}
+
+func TestTranslateChatRequestConsumesPromptCachingControlsFromExtraBody(t *testing.T) {
+	SetPromptCachingEnabledByDefault(false)
+	t.Cleanup(func() {
+		SetPromptCachingEnabledByDefault(false)
+	})
+
+	req := openai.ChatCompletionRequest{
+		Model: "amazon.nova-pro",
+		Messages: []openai.ChatMessage{
+			{Role: "system", Content: openai.ChatMessageText("cached prompt")},
+			{Role: "user", Content: openai.ChatMessageText("hello")},
+		},
+		ExtraBody: map[string]any{
+			"prompt_caching": map[string]any{"system": true, "messages": true},
+			"thinking":       map[string]any{"type": "enabled", "budget_tokens": 4096},
+		},
+	}
+
+	got, err := TranslateChatRequest(context.Background(), req, fakeCachingModel("amazon.nova-pro"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := got.AdditionalModelRequestFields["prompt_caching"]; ok {
+		t.Fatalf("expected prompt_caching to be consumed locally, got %#v", got.AdditionalModelRequestFields)
+	}
+	thinking, ok := got.AdditionalModelRequestFields["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking field passthrough, got %#v", got.AdditionalModelRequestFields)
+	}
+}
+
+func TestTranslateChatRequestInjectsCachePointsForSupportedModel(t *testing.T) {
+	SetPromptCachingEnabledByDefault(false)
+	t.Cleanup(func() {
+		SetPromptCachingEnabledByDefault(false)
+	})
+
+	req := openai.ChatCompletionRequest{
+		Model: "amazon.nova-pro",
+		Messages: []openai.ChatMessage{
+			{Role: "system", Content: openai.ChatMessageText("cached system")},
+			{Role: "user", Content: openai.ChatMessageText("cached user")},
+		},
+		ExtraBody: map[string]any{
+			"prompt_caching": map[string]any{"system": true, "messages": true},
+		},
+	}
+
+	got, err := TranslateChatRequest(context.Background(), req, fakeCachingModel("amazon.nova-pro"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.SystemCachePoint {
+		t.Fatalf("expected system cache point, got %#v", got)
+	}
+	if !lastUserMessageHasCachePoint(got.Messages) {
+		t.Fatalf("expected cache point in last user message, got %#v", got.Messages)
+	}
+}
+
+func TestTranslateChatRequestMapsTopPAndStopSequences(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:       "model",
+		Messages:    []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		TopP:        float64Ptr(0.9),
+		Stop:        openai.ChatStop{Kind: openai.ChatStopKindStrings, Values: []string{"END", "DONE"}},
+		Temperature: float64Ptr(0.2),
+	}
+
+	got, err := TranslateChatRequest(context.Background(), req, fakeCatalogRecord("model"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.TopP == nil || *got.TopP != float32(0.9) {
+		t.Fatalf("expected top_p to translate, got %#v", got.TopP)
+	}
+	if len(got.StopSequences) != 2 || got.StopSequences[0] != "END" || got.StopSequences[1] != "DONE" {
+		t.Fatalf("expected stop sequences to translate, got %#v", got.StopSequences)
+	}
+}
+
+func TestTranslateChatRequestPreservesTopPForThinkingPassThroughOnNonConflictModel(t *testing.T) {
+	req := openai.ChatCompletionRequest{
+		Model:    "amazon.nova-pro",
+		Messages: []openai.ChatMessage{{Role: "user", Content: openai.ChatMessageText("hello")}},
+		TopP:     float64Ptr(0.9),
+		ExtraBody: map[string]any{
+			"thinking": map[string]any{"type": "enabled", "budget_tokens": 4096},
+		},
+	}
+
+	got, err := TranslateChatRequest(context.Background(), req, fakeCachingModel("amazon.nova-pro"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.TopP == nil || *got.TopP != float32(0.9) {
+		t.Fatalf("expected top_p to be preserved for non-conflict model, got %#v", got.TopP)
+	}
+}
+
 func TestTranslateChatResponseBuildsToolCalls(t *testing.T) {
 	resp := ConverseResponse{
 		ResponseID: "abc123",
@@ -320,4 +512,50 @@ func fakeMultimodalCatalogRecord(id string) ModelRecord {
 		ModelKind:       modelKindFoundationModel,
 		InputModalities: []string{"TEXT", "IMAGE"},
 	}
+}
+
+func fakeReasoningModel(id string) ModelRecord {
+	return ModelRecord{
+		ID:                        id,
+		ModelKind:                 modelKindInferenceProfile,
+		ResolvedFoundationModelID: "anthropic.claude-sonnet-4-20250514-v1:0",
+		InputModalities:           []string{"TEXT"},
+	}
+}
+
+func fakeCachingModel(id string) ModelRecord {
+	return ModelRecord{
+		ID:                        id,
+		ModelKind:                 modelKindInferenceProfile,
+		ResolvedFoundationModelID: "amazon.nova-pro-v1:0",
+		InputModalities:           []string{"TEXT"},
+	}
+}
+
+func fakeLegacyClaudeModel(id string) ModelRecord {
+	return ModelRecord{
+		ID:                        id,
+		ModelKind:                 modelKindInferenceProfile,
+		ResolvedFoundationModelID: "anthropic.claude-v2:1",
+		InputModalities:           []string{"TEXT"},
+	}
+}
+
+func lastUserMessageHasCachePoint(messages []Message) bool {
+	for idx := len(messages) - 1; idx >= 0; idx-- {
+		if messages[idx].Role != "user" || len(messages[idx].Content) == 0 {
+			continue
+		}
+		last := messages[idx].Content[len(messages[idx].Content)-1]
+		return last.CachePoint != nil
+	}
+	return false
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
 }

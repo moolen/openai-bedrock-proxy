@@ -42,6 +42,7 @@ func main() {
 	logger := applog.NewLogger(level)
 	slog.SetDefault(logger)
 	addr := net.JoinHostPort(cfg.ListenAddr, cfg.ListenPort)
+	bedrock.SetPromptCachingEnabledByDefault(cfg.EnablePromptCaching)
 
 	logger.Info("starting proxy", "listen_addr", addr, "aws_region", cfg.AWSRegion, "log_level", level.String())
 	logger.Debug("initializing bedrock client")

@@ -13,6 +13,17 @@ import (
 	"github.com/moolen/openai-bedrock-proxy/internal/openai"
 )
 
+var promptCachingEnabledByDefault bool
+
+func SetPromptCachingEnabledByDefault(enabled bool) {
+	promptCachingEnabledByDefault = enabled
+}
+
+type PromptCachingConfig struct {
+	System   *bool
+	Messages *bool
+}
+
 func TranslateChatRequest(ctx context.Context, req openai.ChatCompletionRequest, model ModelRecord) (ConverseRequest, error) {
 	out := ConverseRequest{
 		ModelID:  req.Model,
@@ -75,6 +86,30 @@ func TranslateChatRequest(ctx context.Context, req openai.ChatCompletionRequest,
 		translatedTemperature := float32(*req.Temperature)
 		out.Temperature = &translatedTemperature
 	}
+	if req.TopP != nil {
+		translatedTopP := float32(*req.TopP)
+		out.TopP = &translatedTopP
+	}
+	out.StopSequences = normalizeChatStopSequences(req.Stop)
+	if err := validateChatReasoningControlConflicts(req); err != nil {
+		return ConverseRequest{}, err
+	}
+
+	promptCaching, additionalFields, err := consumePromptCaching(req.ExtraBody)
+	if err != nil {
+		return ConverseRequest{}, err
+	}
+	if len(additionalFields) > 0 {
+		out.AdditionalModelRequestFields = additionalFields
+		if _, ok := additionalFields["thinking"]; ok && supportsThinkingTopPConflict(model) {
+			out.TopP = nil
+		}
+	}
+
+	if err := applyReasoning(&out, req, model); err != nil {
+		return ConverseRequest{}, err
+	}
+	applyPromptCaching(&out, promptCaching, model, promptCachingEnabledByDefault)
 
 	toolChoice, err := normalizeChatToolChoice(req.ToolChoice)
 	if err != nil {
@@ -88,6 +123,217 @@ func TranslateChatRequest(ctx context.Context, req openai.ChatCompletionRequest,
 	out.ToolConfig = toolConfig
 
 	return out, nil
+}
+
+func consumePromptCaching(extra map[string]any) (PromptCachingConfig, map[string]any, error) {
+	if len(extra) == 0 {
+		return PromptCachingConfig{}, nil, nil
+	}
+
+	remaining := make(map[string]any, len(extra))
+	for key, value := range extra {
+		remaining[key] = value
+	}
+
+	rawPromptCaching, ok := remaining["prompt_caching"]
+	if !ok {
+		return PromptCachingConfig{}, remaining, nil
+	}
+	delete(remaining, "prompt_caching")
+
+	configMap, ok := rawPromptCaching.(map[string]any)
+	if !ok {
+		return PromptCachingConfig{}, nil, openai.NewInvalidRequestError("extra_body.prompt_caching is invalid")
+	}
+
+	var cfg PromptCachingConfig
+	if rawSystem, ok := configMap["system"]; ok {
+		value, ok := rawSystem.(bool)
+		if !ok {
+			return PromptCachingConfig{}, nil, openai.NewInvalidRequestError("extra_body.prompt_caching.system is invalid")
+		}
+		cfg.System = &value
+	}
+	if rawMessages, ok := configMap["messages"]; ok {
+		value, ok := rawMessages.(bool)
+		if !ok {
+			return PromptCachingConfig{}, nil, openai.NewInvalidRequestError("extra_body.prompt_caching.messages is invalid")
+		}
+		cfg.Messages = &value
+	}
+
+	if len(remaining) == 0 {
+		remaining = nil
+	}
+	return cfg, remaining, nil
+}
+
+func applyReasoning(out *ConverseRequest, req openai.ChatCompletionRequest, model ModelRecord) error {
+	effort, err := normalizeReasoningEffort(req.ReasoningEffort)
+	if err != nil {
+		return err
+	}
+	if effort == "" {
+		return nil
+	}
+
+	switch {
+	case supportsAnthropicReasoning(model):
+		maxTokens := resolvedChatMaxTokens(req)
+		if maxTokens == nil {
+			return openai.NewInvalidRequestError("reasoning_effort requires max_tokens or max_completion_tokens")
+		}
+		ensureAdditionalModelRequestFields(out)["reasoning_config"] = map[string]any{
+			"type":          "enabled",
+			"budget_tokens": calcReasoningBudgetTokens(*maxTokens, effort),
+		}
+		out.TopP = nil
+	case supportsDeepSeekV3Reasoning(model):
+		ensureAdditionalModelRequestFields(out)["reasoning_config"] = effort
+	default:
+		return openai.NewInvalidRequestError("reasoning_effort is not supported by this model")
+	}
+	return nil
+}
+
+func ensureAdditionalModelRequestFields(out *ConverseRequest) map[string]any {
+	if out.AdditionalModelRequestFields == nil {
+		out.AdditionalModelRequestFields = map[string]any{}
+	}
+	return out.AdditionalModelRequestFields
+}
+
+func calcReasoningBudgetTokens(maxTokens int, effort string) int {
+	switch effort {
+	case "low":
+		return int(float64(maxTokens) * 0.3)
+	case "medium":
+		return int(float64(maxTokens) * 0.6)
+	default:
+		return maxTokens - 1
+	}
+}
+
+func applyPromptCaching(req *ConverseRequest, cfg PromptCachingConfig, model ModelRecord, enabledByDefault bool) {
+	if !supportsPromptCaching(model) {
+		return
+	}
+
+	systemEnabled := enabledByDefault
+	if cfg.System != nil {
+		systemEnabled = *cfg.System
+	}
+	if systemEnabled && len(req.System) > 0 {
+		req.SystemCachePoint = true
+	}
+
+	messagesEnabled := enabledByDefault
+	if cfg.Messages != nil {
+		messagesEnabled = *cfg.Messages
+	}
+	if !messagesEnabled {
+		return
+	}
+
+	for idx := len(req.Messages) - 1; idx >= 0; idx-- {
+		if req.Messages[idx].Role != "user" || len(req.Messages[idx].Content) == 0 {
+			continue
+		}
+		req.Messages[idx].Content = append(req.Messages[idx].Content, ContentBlock{
+			CachePoint: &CachePointBlock{Type: "default"},
+		})
+		return
+	}
+}
+
+func normalizeChatStopSequences(stop openai.ChatStop) []string {
+	switch stop.Kind {
+	case openai.ChatStopKindString:
+		return []string{stop.Value}
+	case openai.ChatStopKindStrings:
+		return append([]string(nil), stop.Values...)
+	default:
+		return nil
+	}
+}
+
+func validateChatReasoningControlConflicts(req openai.ChatCompletionRequest) error {
+	if strings.TrimSpace(req.ReasoningEffort) == "" || len(req.ExtraBody) == 0 {
+		return nil
+	}
+	if _, ok := req.ExtraBody["thinking"]; ok {
+		return openai.NewInvalidRequestError("reasoning_effort cannot be combined with provider-specific reasoning controls")
+	}
+	if _, ok := req.ExtraBody["reasoning_config"]; ok {
+		return openai.NewInvalidRequestError("reasoning_effort cannot be combined with provider-specific reasoning controls")
+	}
+	return nil
+}
+
+func supportsPromptCaching(model ModelRecord) bool {
+	resolved := strings.ToLower(resolvedModelID(model))
+	if strings.Contains(resolved, "anthropic.claude") {
+		excluded := []string{"claude-instant", "claude-v1", "claude-v2"}
+		for _, pattern := range excluded {
+			if strings.Contains(resolved, pattern) {
+				return false
+			}
+		}
+		return true
+	}
+	return strings.Contains(resolved, "amazon.nova")
+}
+
+func supportsAnthropicReasoning(model ModelRecord) bool {
+	resolved := strings.ToLower(resolvedModelID(model))
+	if !strings.Contains(resolved, "anthropic.claude") {
+		return false
+	}
+	excluded := []string{"claude-instant", "claude-v1", "claude-v2"}
+	for _, pattern := range excluded {
+		if strings.Contains(resolved, pattern) {
+			return false
+		}
+	}
+	return true
+}
+
+func supportsDeepSeekV3Reasoning(model ModelRecord) bool {
+	resolved := strings.ToLower(resolvedModelID(model))
+	return strings.Contains(resolved, "deepseek.v3") || strings.Contains(resolved, "deepseek.deepseek-v3")
+}
+
+func supportsThinkingTopPConflict(model ModelRecord) bool {
+	resolved := strings.ToLower(resolvedModelID(model))
+	conflicts := []string{
+		"claude-sonnet-4-5",
+		"claude-haiku-4-5",
+		"claude-opus-4-5",
+	}
+	for _, pattern := range conflicts {
+		if strings.Contains(resolved, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeReasoningEffort(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "":
+		return "", nil
+	case "low", "medium", "high":
+		return strings.TrimSpace(value), nil
+	default:
+		return "", openai.NewInvalidRequestError("reasoning_effort is invalid")
+	}
+}
+
+func resolvedModelID(model ModelRecord) string {
+	if model.ResolvedFoundationModelID != "" {
+		return model.ResolvedFoundationModelID
+	}
+	return model.ID
 }
 
 func TranslateChatResponse(resp ConverseResponse, model string) openai.ChatCompletionResponse {

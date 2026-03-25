@@ -39,3 +39,30 @@ func TestLoadConfigOverrides(t *testing.T) {
 		t.Fatalf("expected override log level, got %q", cfg.LogLevel)
 	}
 }
+
+func TestLoadConfigPromptCaching(t *testing.T) {
+	cfg := LoadFromEnv(func(string) string { return "" })
+	if cfg.EnablePromptCaching {
+		t.Fatal("expected prompt caching to default disabled")
+	}
+
+	env := map[string]string{
+		"ENABLE_PROMPT_CACHING": "true",
+	}
+	cfg = LoadFromEnv(func(key string) string { return env[key] })
+	if !cfg.EnablePromptCaching {
+		t.Fatal("expected prompt caching env override to enable caching")
+	}
+
+	env["ENABLE_PROMPT_CACHING"] = "0"
+	cfg = LoadFromEnv(func(key string) string { return env[key] })
+	if cfg.EnablePromptCaching {
+		t.Fatal("expected \"0\" to keep prompt caching disabled")
+	}
+
+	env["ENABLE_PROMPT_CACHING"] = "treu"
+	cfg = LoadFromEnv(func(key string) string { return env[key] })
+	if cfg.EnablePromptCaching {
+		t.Fatal("expected invalid prompt caching value to remain disabled")
+	}
+}

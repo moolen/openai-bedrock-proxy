@@ -13,6 +13,7 @@ import (
 type ContentBlock struct {
 	Text       string
 	Image      *ImageBlock
+	CachePoint *CachePointBlock
 	ToolUse    *ToolUseBlock
 	ToolResult *ToolResultBlock
 }
@@ -20,6 +21,10 @@ type ContentBlock struct {
 type ImageBlock struct {
 	Format string
 	Bytes  []byte
+}
+
+type CachePointBlock struct {
+	Type string
 }
 
 type ToolUseBlock struct {
@@ -66,12 +71,16 @@ type ToolConfig struct {
 }
 
 type ConverseRequest struct {
-	ModelID     string
-	System      []string
-	Messages    []Message
-	MaxTokens   *int32
-	Temperature *float32
-	ToolConfig  *ToolConfig
+	ModelID                      string
+	System                       []string
+	SystemCachePoint             bool
+	Messages                     []Message
+	MaxTokens                    *int32
+	Temperature                  *float32
+	TopP                         *float32
+	StopSequences                []string
+	ToolConfig                   *ToolConfig
+	AdditionalModelRequestFields map[string]any
 }
 
 func TranslateConversation(modelID string, req conversation.Request, maxOutputTokens *int, temperature *float64) (ConverseRequest, error) {

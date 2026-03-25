@@ -323,21 +323,23 @@ func (c *Client) Stream(ctx context.Context, req openai.ResponsesRequest, w http
 
 func toConverseInput(req ConverseRequest) *bedrockruntime.ConverseInput {
 	return &bedrockruntime.ConverseInput{
-		ModelId:         aws.String(req.ModelID),
-		Messages:        toBedrockMessages(req.Messages),
-		System:          toBedrockSystem(req.System),
-		InferenceConfig: toInferenceConfig(req),
-		ToolConfig:      toSDKToolConfig(req.ToolConfig),
+		ModelId:                      aws.String(req.ModelID),
+		Messages:                     toBedrockMessages(req.Messages),
+		System:                       toBedrockSystem(req.System, req.SystemCachePoint),
+		InferenceConfig:              toInferenceConfig(req),
+		ToolConfig:                   toSDKToolConfig(req.ToolConfig),
+		AdditionalModelRequestFields: toAdditionalModelRequestFields(req.AdditionalModelRequestFields),
 	}
 }
 
 func toConverseStreamInput(req ConverseRequest) *bedrockruntime.ConverseStreamInput {
 	return &bedrockruntime.ConverseStreamInput{
-		ModelId:         aws.String(req.ModelID),
-		Messages:        toBedrockMessages(req.Messages),
-		System:          toBedrockSystem(req.System),
-		InferenceConfig: toInferenceConfig(req),
-		ToolConfig:      toSDKToolConfig(req.ToolConfig),
+		ModelId:                      aws.String(req.ModelID),
+		Messages:                     toBedrockMessages(req.Messages),
+		System:                       toBedrockSystem(req.System, req.SystemCachePoint),
+		InferenceConfig:              toInferenceConfig(req),
+		ToolConfig:                   toSDKToolConfig(req.ToolConfig),
+		AdditionalModelRequestFields: toAdditionalModelRequestFields(req.AdditionalModelRequestFields),
 	}
 }
 
@@ -347,6 +349,12 @@ func toBedrockMessages(messages []Message) []bedrocktypes.Message {
 		content := make([]bedrocktypes.ContentBlock, 0, len(message.Content))
 		for _, block := range message.Content {
 			switch {
+			case block.CachePoint != nil:
+				content = append(content, &bedrocktypes.ContentBlockMemberCachePoint{
+					Value: bedrocktypes.CachePointBlock{
+						Type: toSDKCachePointType(block.CachePoint.Type),
+					},
+				})
 			case block.Image != nil:
 				content = append(content, &bedrocktypes.ContentBlockMemberImage{
 					Value: bedrocktypes.ImageBlock{
@@ -383,22 +391,31 @@ func toBedrockMessages(messages []Message) []bedrocktypes.Message {
 	return out
 }
 
-func toBedrockSystem(system []string) []bedrocktypes.SystemContentBlock {
+func toBedrockSystem(system []string, includeCachePoint bool) []bedrocktypes.SystemContentBlock {
 	out := make([]bedrocktypes.SystemContentBlock, 0, len(system))
 	for _, text := range system {
 		out = append(out, &bedrocktypes.SystemContentBlockMemberText{Value: text})
+	}
+	if includeCachePoint {
+		out = append(out, &bedrocktypes.SystemContentBlockMemberCachePoint{
+			Value: bedrocktypes.CachePointBlock{
+				Type: bedrocktypes.CachePointTypeDefault,
+			},
+		})
 	}
 	return out
 }
 
 func toInferenceConfig(req ConverseRequest) *bedrocktypes.InferenceConfiguration {
-	if req.MaxTokens == nil && req.Temperature == nil {
+	if req.MaxTokens == nil && req.Temperature == nil && req.TopP == nil && len(req.StopSequences) == 0 {
 		return nil
 	}
 
 	return &bedrocktypes.InferenceConfiguration{
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		StopSequences: append([]string(nil), req.StopSequences...),
 	}
 }
 
@@ -479,6 +496,22 @@ func toSDKImageFormat(format string) bedrocktypes.ImageFormat {
 	default:
 		panic(fmt.Sprintf("unknown image format: %q", format))
 	}
+}
+
+func toSDKCachePointType(value string) bedrocktypes.CachePointType {
+	switch value {
+	case "", "default":
+		return bedrocktypes.CachePointTypeDefault
+	default:
+		panic(fmt.Sprintf("unknown cache point type: %q", value))
+	}
+}
+
+func toAdditionalModelRequestFields(fields map[string]any) bedrockdocument.Interface {
+	if len(fields) == 0 {
+		return nil
+	}
+	return bedrockdocument.NewLazyDocument(fields)
 }
 
 func extractOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {

@@ -412,6 +412,77 @@ func TestClientChatBuildsConverseInputWithImageBlocks(t *testing.T) {
 	}
 }
 
+func TestClientChatMapsAdvancedInferenceFieldsAndCachePoints(t *testing.T) {
+	topP := float32(0.9)
+	temperature := float32(0.2)
+	maxTokens := int32(512)
+	runtime := &fakeRuntime{
+		converseOutput: &bedrockruntime.ConverseOutput{
+			Output: &bedrocktypes.ConverseOutputMemberMessage{
+				Value: bedrocktypes.Message{
+					Content: []bedrocktypes.ContentBlock{
+						&bedrocktypes.ContentBlockMemberText{Value: "done"},
+					},
+				},
+			},
+		},
+	}
+	client := &Client{runtime: runtime}
+
+	_, err := client.Chat(context.Background(), ConverseRequest{
+		ModelID:          "model-id",
+		System:           []string{"cached system"},
+		SystemCachePoint: true,
+		Messages: []Message{{
+			Role: "user",
+			Content: []ContentBlock{
+				{Text: "cached user"},
+				{CachePoint: &CachePointBlock{Type: "default"}},
+			},
+		}},
+		MaxTokens:   &maxTokens,
+		Temperature: &temperature,
+		TopP:        &topP,
+		StopSequences: []string{
+			"END",
+		},
+		AdditionalModelRequestFields: map[string]any{
+			"thinking": map[string]any{"type": "enabled"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastConverseInput == nil || runtime.lastConverseInput.InferenceConfig == nil {
+		t.Fatalf("expected converse input with inference config, got %#v", runtime.lastConverseInput)
+	}
+	if runtime.lastConverseInput.InferenceConfig.TopP == nil || *runtime.lastConverseInput.InferenceConfig.TopP != topP {
+		t.Fatalf("expected top_p to map, got %#v", runtime.lastConverseInput.InferenceConfig)
+	}
+	if len(runtime.lastConverseInput.InferenceConfig.StopSequences) != 1 || runtime.lastConverseInput.InferenceConfig.StopSequences[0] != "END" {
+		t.Fatalf("expected stop sequences to map, got %#v", runtime.lastConverseInput.InferenceConfig)
+	}
+	if len(runtime.lastConverseInput.System) != 2 {
+		t.Fatalf("expected system text plus cache point, got %#v", runtime.lastConverseInput.System)
+	}
+	if _, ok := runtime.lastConverseInput.System[1].(*bedrocktypes.SystemContentBlockMemberCachePoint); !ok {
+		t.Fatalf("expected system cache point block, got %T", runtime.lastConverseInput.System[1])
+	}
+	if len(runtime.lastConverseInput.Messages) != 1 || len(runtime.lastConverseInput.Messages[0].Content) != 2 {
+		t.Fatalf("expected message cache point block, got %#v", runtime.lastConverseInput.Messages)
+	}
+	if _, ok := runtime.lastConverseInput.Messages[0].Content[1].(*bedrocktypes.ContentBlockMemberCachePoint); !ok {
+		t.Fatalf("expected user cache point block, got %T", runtime.lastConverseInput.Messages[0].Content[1])
+	}
+	if runtime.lastConverseInput.AdditionalModelRequestFields == nil {
+		t.Fatal("expected additional model request fields to map")
+	}
+	additional, ok := decodeDocument(t, runtime.lastConverseInput.AdditionalModelRequestFields).(map[string]any)
+	if !ok || additional["thinking"] == nil {
+		t.Fatalf("expected additional request fields to survive, got %#v", runtime.lastConverseInput.AdditionalModelRequestFields)
+	}
+}
+
 func TestClientRespondConversationParsesMixedTextAndToolUseOutput(t *testing.T) {
 	runtime := &fakeRuntime{
 		converseOutput: &bedrockruntime.ConverseOutput{

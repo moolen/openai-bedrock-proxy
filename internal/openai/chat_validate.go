@@ -36,6 +36,12 @@ func ValidateChatCompletionRequest(req ChatCompletionRequest) error {
 	if err := validateChatStop(req.Stop); err != nil {
 		return err
 	}
+	if err := validateReasoningEffort(req.ReasoningEffort); err != nil {
+		return err
+	}
+	if err := validateReasoningControlConflicts(req); err != nil {
+		return err
+	}
 
 	if err := validateResolvedMaxTokens(req); err != nil {
 		return err
@@ -170,6 +176,28 @@ func resolvedMaxTokens(req ChatCompletionRequest) *int {
 		return req.MaxCompletionTokens
 	}
 	return req.MaxTokens
+}
+
+func validateReasoningEffort(value string) error {
+	switch strings.TrimSpace(value) {
+	case "", "low", "medium", "high":
+		return nil
+	default:
+		return NewInvalidRequestError("reasoning_effort is invalid")
+	}
+}
+
+func validateReasoningControlConflicts(req ChatCompletionRequest) error {
+	if strings.TrimSpace(req.ReasoningEffort) == "" || len(req.ExtraBody) == 0 {
+		return nil
+	}
+	if _, ok := req.ExtraBody["thinking"]; ok {
+		return NewInvalidRequestError("reasoning_effort cannot be combined with provider-specific reasoning controls")
+	}
+	if _, ok := req.ExtraBody["reasoning_config"]; ok {
+		return NewInvalidRequestError("reasoning_effort cannot be combined with provider-specific reasoning controls")
+	}
+	return nil
 }
 
 func validateChatToolChoice(choice ChatToolChoice) error {
