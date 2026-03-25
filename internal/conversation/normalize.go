@@ -29,13 +29,15 @@ func NormalizeRequest(req openai.ResponsesRequest) (Request, error) {
 }
 
 func Merge(base, current Request) Request {
-	mergedMessages := make([]Message, 0, len(base.Messages)+len(current.Messages))
-	mergedMessages = append(mergedMessages, base.Messages...)
-	mergedMessages = append(mergedMessages, current.Messages...)
+	baseMessages := cloneMessages(base.Messages)
+	currentMessages := cloneMessages(current.Messages)
+	mergedMessages := make([]Message, 0, len(baseMessages)+len(currentMessages))
+	mergedMessages = append(mergedMessages, baseMessages...)
+	mergedMessages = append(mergedMessages, currentMessages...)
 	return Request{
 		System:     append([]string(nil), current.System...),
 		Messages:   mergedMessages,
-		Tools:      append([]ToolDefinition(nil), current.Tools...),
+		Tools:      cloneToolDefinitions(current.Tools),
 		ToolChoice: current.ToolChoice,
 	}
 }
@@ -43,8 +45,8 @@ func Merge(base, current Request) Request {
 func AppendAssistantReply(req Request, assistantBlocks []Block) Request {
 	updated := Request{
 		System:     append([]string(nil), req.System...),
-		Messages:   append([]Message(nil), req.Messages...),
-		Tools:      append([]ToolDefinition(nil), req.Tools...),
+		Messages:   cloneMessages(req.Messages),
+		Tools:      cloneToolDefinitions(req.Tools),
 		ToolChoice: req.ToolChoice,
 	}
 	updated.Messages = append(updated.Messages, Message{
@@ -345,6 +347,9 @@ func normalizeToolChoice(choice *openai.ToolChoice) ToolChoice {
 		return ToolChoice{}
 	}
 
+	if choice.Type == "none" || (choice.Mode == "string" && choice.Type == "none") {
+		return ToolChoice{}
+	}
 	if choice.Type == "auto" {
 		return ToolChoice{Type: "auto"}
 	}
@@ -426,8 +431,30 @@ func cloneRawMessageMap(input map[string]json.RawMessage) map[string]json.RawMes
 	return cloned
 }
 
+func cloneToolDefinitions(tools []ToolDefinition) []ToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+	cloned := make([]ToolDefinition, len(tools))
+	for idx, tool := range tools {
+		cloned[idx] = ToolDefinition{
+			Type:        tool.Type,
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  cloneStringAnyMap(tool.Parameters),
+			Config:      cloneRawMessageMap(tool.Config),
+			BuiltIn:     tool.BuiltIn,
+		}
+	}
+	return cloned
+}
+
 func cloneValue(value any) any {
 	switch typed := value.(type) {
+	case json.RawMessage:
+		return append(json.RawMessage(nil), typed...)
+	case []byte:
+		return append([]byte(nil), typed...)
 	case map[string]any:
 		return cloneStringAnyMap(typed)
 	case []any:

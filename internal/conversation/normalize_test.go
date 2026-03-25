@@ -185,6 +185,26 @@ func TestNormalizeRequestNormalizesBuiltInToolsIntoSyntheticDefinitions(t *testi
 	}
 }
 
+func TestNormalizeRequestLeavesToolChoiceEmptyForNone(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		ToolChoice: &openai.ToolChoice{
+			Mode: "string",
+			Type: "none",
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+
+	if normalized.ToolChoice != (ToolChoice{}) {
+		t.Fatalf("expected empty tool choice for none, got %#v", normalized.ToolChoice)
+	}
+}
+
 func TestNormalizeRequestNormalizesToolResultItemsIntoUserBlocks(t *testing.T) {
 	req := openai.ResponsesRequest{
 		Model: "model",
@@ -310,6 +330,87 @@ func TestMergeUsesCurrentSystemAndAppendsMessages(t *testing.T) {
 	}
 }
 
+func TestMergeClonesMessagesAndTools(t *testing.T) {
+	base := Request{
+		System: []string{"old"},
+		Messages: []Message{
+			{
+				Role: "user",
+				Blocks: []Block{
+					{
+						Type: BlockTypeToolResult,
+						ToolResult: &ToolResult{
+							CallID: "call_base",
+							Output: []byte("base"),
+						},
+					},
+				},
+			},
+		},
+	}
+	current := Request{
+		System: []string{"current"},
+		Messages: []Message{
+			{
+				Role: "assistant",
+				Blocks: []Block{
+					{Type: BlockTypeText, Text: "now"},
+				},
+			},
+		},
+		Tools: []ToolDefinition{
+			{
+				Type:       "function",
+				Name:       "lookup",
+				Parameters: map[string]any{"type": "object", "properties": map[string]any{"q": "string"}},
+			},
+			{
+				Type:    "web_search_preview",
+				Name:    syntheticBuiltInToolName("web_search_preview"),
+				BuiltIn: true,
+				Config: map[string]json.RawMessage{
+					"user_location": json.RawMessage(`{"country":"DE"}`),
+				},
+			},
+		},
+		ToolChoice: ToolChoice{Type: "function", Name: "lookup"},
+	}
+
+	merged := Merge(base, current)
+
+	base.Messages[0].Blocks[0].ToolResult.Output.([]byte)[0] = 'X'
+	current.Messages[0].Blocks[0].Text = "changed"
+	current.Tools[0].Parameters["properties"].(map[string]any)["q"] = "number"
+	current.Tools[1].Config["user_location"][2] = 'X'
+
+	if string(merged.Messages[0].Blocks[0].ToolResult.Output.([]byte)) != "base" {
+		t.Fatalf("expected base tool result payload to be cloned, got %#v", merged.Messages[0].Blocks[0].ToolResult.Output)
+	}
+	if merged.Messages[1].Blocks[0].Text != "now" {
+		t.Fatalf("expected current message blocks to be cloned, got %#v", merged.Messages[1].Blocks)
+	}
+	if merged.Tools[0].Parameters["properties"].(map[string]any)["q"] != "string" {
+		t.Fatalf("expected tool parameters to be cloned, got %#v", merged.Tools[0].Parameters)
+	}
+	if string(merged.Tools[1].Config["user_location"]) != `{"country":"DE"}` {
+		t.Fatalf("expected built-in config to be cloned, got %#v", merged.Tools[1].Config)
+	}
+
+	merged.Messages[1].Blocks[0].Text = "mutated"
+	merged.Tools[0].Parameters["type"] = "array"
+	merged.Tools[1].Config["user_location"][2] = 'Y'
+
+	if current.Messages[0].Blocks[0].Text != "changed" {
+		t.Fatalf("expected current messages not to alias merged messages")
+	}
+	if current.Tools[0].Parameters["type"] != "object" {
+		t.Fatalf("expected current tool parameters not to alias merged tools, got %#v", current.Tools[0].Parameters)
+	}
+	if string(current.Tools[1].Config["user_location"]) != `{"Xountry":"DE"}` {
+		t.Fatalf("expected current config not to alias merged config, got %#v", current.Tools[1].Config)
+	}
+}
+
 func TestAppendAssistantReplyAppendsToMessages(t *testing.T) {
 	req := Request{
 		System: []string{"sys"},
@@ -345,6 +446,69 @@ func TestAppendAssistantReplyAppendsToMessages(t *testing.T) {
 	}
 	if len(updated.System) != 1 || updated.System[0] != "sys" {
 		t.Fatalf("unexpected system after append: %#v", updated.System)
+	}
+}
+
+func TestAppendAssistantReplyClonesMessagesToolsAndBlocks(t *testing.T) {
+	req := Request{
+		System: []string{"sys"},
+		Messages: []Message{
+			{
+				Role: "user",
+				Blocks: []Block{
+					{Type: BlockTypeText, Text: "hi"},
+				},
+			},
+		},
+		Tools: []ToolDefinition{
+			{
+				Type:       "function",
+				Name:       "lookup",
+				Parameters: map[string]any{"type": "object"},
+			},
+			{
+				Type:    "web_search_preview",
+				Name:    syntheticBuiltInToolName("web_search_preview"),
+				BuiltIn: true,
+				Config: map[string]json.RawMessage{
+					"user_location": json.RawMessage(`{"country":"DE"}`),
+				},
+			},
+		},
+	}
+	assistantBlocks := []Block{
+		{Type: BlockTypeText, Text: "ok"},
+		{
+			Type: BlockTypeToolResult,
+			ToolResult: &ToolResult{
+				CallID: "call_1",
+				Output: []byte("payload"),
+			},
+		},
+	}
+
+	updated := AppendAssistantReply(req, assistantBlocks)
+
+	req.Messages[0].Blocks[0].Text = "changed"
+	req.Tools[0].Parameters["type"] = "array"
+	req.Tools[1].Config["user_location"][2] = 'X'
+	assistantBlocks[0].Text = "mutated"
+	assistantBlocks[1].ToolResult.Output.([]byte)[0] = 'X'
+
+	if updated.Messages[0].Blocks[0].Text != "hi" {
+		t.Fatalf("expected existing request messages to be cloned, got %#v", updated.Messages[0].Blocks)
+	}
+	if updated.Messages[1].Blocks[0].Text != "ok" {
+		t.Fatalf("expected appended blocks to be cloned, got %#v", updated.Messages[1].Blocks)
+	}
+	if string(updated.Messages[1].Blocks[1].ToolResult.Output.([]byte)) != "payload" {
+		t.Fatalf("expected appended tool result payload to be cloned, got %#v", updated.Messages[1].Blocks[1].ToolResult.Output)
+	}
+	if updated.Tools[0].Parameters["type"] != "object" {
+		t.Fatalf("expected tool parameters to be cloned, got %#v", updated.Tools[0].Parameters)
+	}
+	if string(updated.Tools[1].Config["user_location"]) != `{"country":"DE"}` {
+		t.Fatalf("expected built-in config to be cloned, got %#v", updated.Tools[1].Config)
 	}
 }
 
