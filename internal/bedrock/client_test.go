@@ -1139,6 +1139,88 @@ func TestClientChatBuildsConverseInputAndParsesReasoningBlocks(t *testing.T) {
 	}
 }
 
+func TestClientEmbedBuildsCohereInvokeModelRequestAndParsesResponse(t *testing.T) {
+	runtime := &fakeRuntime{
+		invokeModelOutputs: []*bedrockruntime.InvokeModelOutput{{
+			ContentType: aws.String("application/json"),
+			Body:        []byte(`{"embeddings":[[0.1,0.2],[0.3,0.4]]}`),
+		}},
+	}
+	client := &Client{runtime: runtime}
+
+	resp, err := client.Embed(context.Background(), openai.EmbeddingsRequest{
+		Model: "cohere.embed-english-v3",
+		Input: []string{"hello", "world"},
+	}, ModelRecord{
+		ID: "cohere.embed-english-v3",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastInvokeModelInput == nil {
+		t.Fatal("expected invoke model input to be captured")
+	}
+	if got := aws.ToString(runtime.lastInvokeModelInput.ModelId); got != "cohere.embed-english-v3" {
+		t.Fatalf("expected invoke model id passthrough, got %q", got)
+	}
+	if got := aws.ToString(runtime.lastInvokeModelInput.Accept); got != "application/json" {
+		t.Fatalf("expected accept header to be application/json, got %q", got)
+	}
+	if got := aws.ToString(runtime.lastInvokeModelInput.ContentType); got != "application/json" {
+		t.Fatalf("expected content type to be application/json, got %q", got)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(runtime.lastInvokeModelInput.Body, &body); err != nil {
+		t.Fatalf("unexpected request body JSON error: %v", err)
+	}
+	texts, ok := body["texts"].([]any)
+	if !ok || len(texts) != 2 || texts[0] != "hello" || texts[1] != "world" {
+		t.Fatalf("expected cohere request texts to survive, got %#v", body)
+	}
+
+	if resp.Object != "list" || resp.Model != "cohere.embed-english-v3" {
+		t.Fatalf("unexpected embeddings response metadata: %#v", resp)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected two embeddings, got %#v", resp.Data)
+	}
+	first, ok := resp.Data[0].Embedding.([]float64)
+	if !ok || len(first) != 2 || first[0] != 0.1 || first[1] != 0.2 {
+		t.Fatalf("expected first embedding vector, got %#v", resp.Data[0].Embedding)
+	}
+}
+
+func TestClientEmbedUsesResolvedModelForAdapterSelection(t *testing.T) {
+	runtime := &fakeRuntime{
+		invokeModelOutputs: []*bedrockruntime.InvokeModelOutput{{
+			ContentType: aws.String("application/json"),
+			Body:        []byte(`{"embeddings":[{"embeddingType":"TEXT","embedding":[0.1,0.2]}]}`),
+		}},
+	}
+	client := &Client{runtime: runtime}
+
+	resp, err := client.Embed(context.Background(), openai.EmbeddingsRequest{
+		Model: "us.amazon.nova-2-multimodal-embeddings-v1:0",
+		Input: "hello",
+	}, ModelRecord{
+		ID:                        "us.amazon.nova-2-multimodal-embeddings-v1:0",
+		ResolvedFoundationModelID: "amazon.nova-2-multimodal-embeddings-v1:0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runtime.lastInvokeModelInput == nil {
+		t.Fatal("expected invoke model input to be captured")
+	}
+	if got := aws.ToString(runtime.lastInvokeModelInput.ModelId); got != "us.amazon.nova-2-multimodal-embeddings-v1:0" {
+		t.Fatalf("expected inference profile id to be invoked, got %q", got)
+	}
+	if resp.Model != "us.amazon.nova-2-multimodal-embeddings-v1:0" || len(resp.Data) != 1 {
+		t.Fatalf("expected parsed nova embeddings response, got %#v", resp)
+	}
+}
+
 type fakeRuntime struct {
 	lastConverseInput       *bedrockruntime.ConverseInput
 	converseOutput          *bedrockruntime.ConverseOutput
@@ -1146,6 +1228,9 @@ type fakeRuntime struct {
 	lastConverseStreamInput *bedrockruntime.ConverseStreamInput
 	converseStreamOutput    *bedrockruntime.ConverseStreamOutput
 	converseStreamErr       error
+	lastInvokeModelInput    *bedrockruntime.InvokeModelInput
+	invokeModelOutputs      []*bedrockruntime.InvokeModelOutput
+	invokeModelErr          error
 }
 
 func (f *fakeRuntime) Converse(_ context.Context, input *bedrockruntime.ConverseInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
@@ -1159,6 +1244,19 @@ func (f *fakeRuntime) ConverseStream(_ context.Context, input *bedrockruntime.Co
 		return nil, nil
 	}
 	return f.converseStreamOutput, f.converseStreamErr
+}
+
+func (f *fakeRuntime) InvokeModel(_ context.Context, input *bedrockruntime.InvokeModelInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
+	f.lastInvokeModelInput = input
+	if f.invokeModelErr != nil {
+		return nil, f.invokeModelErr
+	}
+	if len(f.invokeModelOutputs) == 0 {
+		return nil, nil
+	}
+	out := f.invokeModelOutputs[0]
+	f.invokeModelOutputs = f.invokeModelOutputs[1:]
+	return out, nil
 }
 
 type fakeStream struct {

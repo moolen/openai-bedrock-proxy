@@ -24,6 +24,7 @@ import (
 type RuntimeAPI interface {
 	Converse(context.Context, *bedrockruntime.ConverseInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error)
 	ConverseStream(context.Context, *bedrockruntime.ConverseStreamInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseStreamOutput, error)
+	InvokeModel(context.Context, *bedrockruntime.InvokeModelInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
 }
 
 type CatalogAPI interface {
@@ -94,6 +95,10 @@ func (c *Client) ConverseStream(ctx context.Context, input *bedrockruntime.Conve
 	return c.runtime.ConverseStream(ctx, input, optFns...)
 }
 
+func (c *Client) InvokeModel(ctx context.Context, input *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
+	return c.runtime.InvokeModel(ctx, input, optFns...)
+}
+
 func (c *Client) ListModels(ctx context.Context) ([]ModelSummary, error) {
 	catalog, err := c.Catalog(ctx)
 	if err != nil {
@@ -122,6 +127,25 @@ func (c *Client) LookupModel(ctx context.Context, id string) (ModelRecord, error
 		return ModelRecord{}, openai.NewInvalidRequestError("model is not available in Bedrock catalog")
 	}
 	return record, nil
+}
+
+func (c *Client) Embed(ctx context.Context, req openai.EmbeddingsRequest, record ModelRecord) (openai.EmbeddingsResponse, error) {
+	modelID := req.Model
+	if record.ID != "" {
+		modelID = record.ID
+	}
+
+	adapterModelID := resolvedModelID(record)
+	if adapterModelID == "" {
+		adapterModelID = req.Model
+	}
+
+	adapter, err := selectEmbeddingAdapter(adapterModelID)
+	if err != nil {
+		return openai.EmbeddingsResponse{}, err
+	}
+
+	return adapter.Embed(ctx, c.runtime, modelID, req)
 }
 
 func (c *Client) Catalog(ctx context.Context) (Catalog, error) {
