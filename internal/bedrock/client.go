@@ -183,7 +183,7 @@ func (c *Client) Chat(ctx context.Context, req ConverseRequest) (ConverseRespons
 
 	result := ConverseResponse{
 		ResponseID: responseIDFromMetadata(resp),
-		Output:     extractOutput(resp),
+		Output:     extractChatOutput(resp),
 		StopReason: string(resp.StopReason),
 	}
 	logger.Info("bedrock chat converse completed", "response_id", result.ResponseID, "stop_reason", result.StopReason)
@@ -418,6 +418,14 @@ func toSDKToolResultContent(content []ToolResultContentBlock) []bedrocktypes.Too
 }
 
 func extractOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {
+	return extractOutputBlocks(resp, false)
+}
+
+func extractChatOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {
+	return extractOutputBlocks(resp, true)
+}
+
+func extractOutputBlocks(resp *bedrockruntime.ConverseOutput, includeReasoning bool) []OutputBlock {
 	if resp == nil {
 		return nil
 	}
@@ -445,6 +453,9 @@ func extractOutput(resp *bedrockruntime.ConverseOutput) []OutputBlock {
 				},
 			})
 		case *bedrocktypes.ContentBlockMemberReasoningContent:
+			if !includeReasoning {
+				continue
+			}
 			reasoningOutput, ok := reasoningText(typed.Value)
 			if !ok || reasoningOutput == "" {
 				continue

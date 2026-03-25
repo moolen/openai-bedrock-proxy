@@ -74,7 +74,12 @@ func TranslateChatRequest(req openai.ChatCompletionRequest, model ModelRecord) (
 		out.Temperature = &translatedTemperature
 	}
 
-	toolConfig, err := toToolConfig(normalizeChatTools(req.Tools), normalizeChatToolChoice(req.ToolChoice))
+	toolChoice, err := normalizeChatToolChoice(req.ToolChoice)
+	if err != nil {
+		return ConverseRequest{}, err
+	}
+
+	toolConfig, err := toToolConfig(normalizeChatTools(req.Tools), toolChoice)
 	if err != nil {
 		return ConverseRequest{}, err
 	}
@@ -299,34 +304,36 @@ func normalizeChatTools(tools []openai.Tool) []conversation.ToolDefinition {
 	return normalized
 }
 
-func normalizeChatToolChoice(choice openai.ChatToolChoice) conversation.ToolChoice {
+func normalizeChatToolChoice(choice openai.ChatToolChoice) (conversation.ToolChoice, error) {
 	if choice.Kind == openai.ChatToolChoiceKindUnset {
-		return conversation.ToolChoice{}
+		return conversation.ToolChoice{}, nil
 	}
 
 	switch choice.Kind {
 	case openai.ChatToolChoiceKindString:
 		switch choice.StringValue {
 		case "", "none":
-			return conversation.ToolChoice{}
-		case "auto", "required":
-			return conversation.ToolChoice{Type: "auto"}
+			return conversation.ToolChoice{}, nil
+		case "auto":
+			return conversation.ToolChoice{Type: "auto"}, nil
+		case "required":
+			return conversation.ToolChoice{}, openai.NewInvalidRequestError("tool_choice \"required\" is not supported for chat completions")
 		default:
 			return conversation.ToolChoice{
 				Type: choice.StringValue,
 				Name: syntheticBuiltInToolName(choice.StringValue),
-			}
+			}, nil
 		}
 	case openai.ChatToolChoiceKindFunction:
 		if choice.FunctionValue == nil {
-			return conversation.ToolChoice{}
+			return conversation.ToolChoice{}, nil
 		}
 		return conversation.ToolChoice{
 			Type: "function",
 			Name: choice.FunctionValue.Function.Name,
-		}
+		}, nil
 	default:
-		return conversation.ToolChoice{}
+		return conversation.ToolChoice{}, nil
 	}
 }
 
