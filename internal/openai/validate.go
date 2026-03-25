@@ -54,6 +54,9 @@ func validateTools(tools []Tool) error {
 			if tool.Function == nil || tool.Function.Name == "" {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name is required")
 			}
+			if tool.Name != "" && tool.Name != tool.Function.Name {
+				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].name must match tools[" + strconv.Itoa(idx) + "].function.name")
+			}
 			if _, ok := seenFunctionNames[tool.Function.Name]; ok {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name duplicates a previous tool")
 			}

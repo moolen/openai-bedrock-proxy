@@ -228,6 +228,23 @@ func TestValidateResponsesRequestRejectsDuplicateFunctionToolNames(t *testing.T)
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[1].function.name duplicates a previous tool")
 }
 
+func TestValidateResponsesRequestRejectsFunctionToolWithMismatchedTopLevelName(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{
+				Type: "function",
+				Name: "top_level_name",
+				Function: &ToolFunction{
+					Name: "function_name",
+				},
+			},
+		},
+	}
+	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].name must match tools[0].function.name")
+}
+
 func TestValidateResponsesRequestAcceptsBuiltInTools(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
