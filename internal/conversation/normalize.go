@@ -282,6 +282,50 @@ func normalizeBlock(role string, block map[string]any) (Block, error) {
 				Output: cloneValue(output),
 			},
 		}, nil
+	case "tool_search_output":
+		if role != "user" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		statusValue, ok := block["status"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		status, ok := statusValue.(string)
+		if !ok || status == "" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		executionValue, ok := block["execution"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		execution, ok := executionValue.(string)
+		if !ok || execution == "" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		toolsValue, ok := block["tools"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		return Block{
+			Type: BlockTypeToolResult,
+			ToolResult: &ToolResult{
+				CallID: callID,
+				Output: map[string]any{
+					"type":      "tool_search_output",
+					"status":    status,
+					"execution": execution,
+					"tools":     cloneValue(toolsValue),
+				},
+			},
+		}, nil
 	case "function_call":
 		if role != "assistant" {
 			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
@@ -315,6 +359,54 @@ func normalizeBlock(role string, block map[string]any) (Block, error) {
 				ID:        callID,
 				Name:      name,
 				Arguments: arguments,
+			},
+		}, nil
+	case "tool_search_call":
+		if role != "assistant" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		argumentsValue, ok := block["arguments"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		return Block{
+			Type: BlockTypeToolCall,
+			ToolCall: &ToolCall{
+				ID:        callID,
+				Name:      syntheticBuiltInToolName("tool_search"),
+				Arguments: mustMarshalValue(argumentsValue),
+			},
+		}, nil
+	case "local_shell_call":
+		if role != "assistant" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		actionValue, ok := block["action"]
+		if !ok {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		return Block{
+			Type: BlockTypeToolCall,
+			ToolCall: &ToolCall{
+				ID:        callID,
+				Name:      syntheticBuiltInToolName("local_shell"),
+				Arguments: mustMarshalValue(actionValue),
 			},
 		}, nil
 	case "custom_tool_call":
@@ -352,6 +444,14 @@ func normalizeBlock(role string, block map[string]any) (Block, error) {
 				Name:      name,
 				Arguments: mustMarshalCustomToolInput(input),
 			},
+		}, nil
+	case "image_generation_call":
+		if role != "assistant" {
+			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+		}
+		return Block{
+			Type: BlockTypeText,
+			Text: mustMarshalTaggedText("image_generation_call", block),
 		}, nil
 	default:
 		return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
@@ -402,10 +502,11 @@ func normalizeTools(tools []openai.Tool) []ToolDefinition {
 			continue
 		}
 		normalized = append(normalized, ToolDefinition{
-			Type:    tool.Type,
-			Name:    syntheticBuiltInToolName(tool.Type),
-			Config:  cloneRawMessageMap(tool.Config),
-			BuiltIn: true,
+			Type:        tool.Type,
+			Name:        syntheticBuiltInToolName(tool.Type),
+			Description: tool.Description,
+			Config:      cloneRawMessageMap(tool.Config),
+			BuiltIn:     true,
 		})
 	}
 	return normalized
@@ -467,6 +568,22 @@ func mustMarshalCustomToolInput(input string) string {
 		return `{"input":""}`
 	}
 	return string(encoded)
+}
+
+func mustMarshalValue(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `{}`
+	}
+	return string(encoded)
+}
+
+func mustMarshalTaggedText(tag string, value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "<" + tag + ">{}</" + tag + ">"
+	}
+	return "<" + tag + ">" + string(encoded) + "</" + tag + ">"
 }
 
 func systemTextFromBlocks(blocks []Block) string {

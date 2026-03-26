@@ -108,6 +108,27 @@ func TestValidateResponsesRequestAcceptsCustomToolCallOutputsInUserMessages(t *t
 	}
 }
 
+func TestValidateResponsesRequestAcceptsToolSearchOutputsInUserMessages(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type":      "tool_search_output",
+					"call_id":   "call_1",
+					"status":    "completed",
+					"execution": "client",
+					"tools":     []any{},
+				},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected tool_search_output blocks to be accepted, got %v", err)
+	}
+}
+
 func TestValidateResponsesRequestAcceptsAssistantEasyMessage(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -120,6 +141,40 @@ func TestValidateResponsesRequestAcceptsAssistantEasyMessage(t *testing.T) {
 	}
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected assistant easy message input to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsAssistantCodexToolCalls(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "assistant",
+			"content": []map[string]any{
+				{
+					"type":      "tool_search_call",
+					"call_id":   "search_1",
+					"execution": "client",
+					"arguments": map[string]any{"query": "calendar"},
+				},
+				{
+					"type":    "local_shell_call",
+					"call_id": "shell_1",
+					"action": map[string]any{
+						"type":    "exec",
+						"command": []any{"pwd"},
+					},
+				},
+				{
+					"type":   "image_generation_call",
+					"id":     "img_1",
+					"status": "completed",
+					"result": "Zm9v",
+				},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected Codex assistant tool calls to be accepted, got %v", err)
 	}
 }
 
@@ -732,10 +787,43 @@ func TestValidateResponsesRequestRejectsUnsupportedBuiltInTool(t *testing.T) {
 		Model: "model",
 		Input: "hi",
 		Tools: []Tool{
-			{Type: "image_generation"},
+			{Type: "unknown_built_in"},
 		},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].type is not supported")
+}
+
+func TestValidateResponsesRequestAcceptsCodexBuiltInTools(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{
+			{
+				Type:        "tool_search",
+				Description: "Search tools",
+				Config: map[string]json.RawMessage{
+					"execution":  json.RawMessage(`"client"`),
+					"parameters": json.RawMessage(`{"type":"object"}`),
+				},
+			},
+			{
+				Type: "local_shell",
+			},
+			{
+				Type: "image_generation",
+				Config: map[string]json.RawMessage{
+					"output_format": json.RawMessage(`"png"`),
+				},
+			},
+		},
+		ToolChoice: &ToolChoice{
+			Mode: "object",
+			Type: "local_shell",
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected Codex built-in tools to validate, got %v", err)
+	}
 }
 
 func TestValidateResponsesRequestRejectsBuiltInToolWithFunction(t *testing.T) {

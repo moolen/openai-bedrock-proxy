@@ -1,6 +1,9 @@
 package bedrock
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestTranslateConverseResponseBuildsOutputText(t *testing.T) {
 	resp := ConverseResponse{
@@ -133,6 +136,116 @@ func TestTranslateConverseResponseMapsSyntheticCustomToolCall(t *testing.T) {
 	}
 	if got.Output[0].Input != "*** Begin Patch" {
 		t.Fatalf("expected custom input to be extracted, got %#v", got.Output[0])
+	}
+}
+
+func TestTranslateConverseResponseMapsToolSearchCall(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "search_1",
+					Name:      "__builtin_tool_search",
+					Arguments: `{"query":"calendar create","limit":1}`,
+				},
+			},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(got.Output))
+	}
+	if got.Output[0].Type != "tool_search_call" {
+		t.Fatalf("expected tool_search_call output, got %#v", got.Output[0])
+	}
+	encoded, err := json.Marshal(got.Output[0])
+	if err != nil {
+		t.Fatalf("expected tool_search output item to marshal, got %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("expected marshaled tool_search output to decode, got %v", err)
+	}
+	if decoded["execution"] != "client" {
+		t.Fatalf("expected tool_search execution metadata, got %#v", decoded)
+	}
+	arguments, ok := decoded["arguments"].(map[string]any)
+	if !ok || arguments["query"] != "calendar create" {
+		t.Fatalf("expected tool_search arguments payload, got %#v", decoded)
+	}
+}
+
+func TestTranslateConverseResponseMapsLocalShellCall(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "shell_1",
+					Name:      "__builtin_local_shell",
+					Arguments: `{"command":["pwd"],"working_directory":"/tmp"}`,
+				},
+			},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(got.Output))
+	}
+	if got.Output[0].Type != "local_shell_call" {
+		t.Fatalf("expected local_shell_call output, got %#v", got.Output[0])
+	}
+	encoded, err := json.Marshal(got.Output[0])
+	if err != nil {
+		t.Fatalf("expected local_shell output item to marshal, got %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("expected marshaled local_shell output to decode, got %v", err)
+	}
+	action, ok := decoded["action"].(map[string]any)
+	if !ok || action["type"] != "exec" {
+		t.Fatalf("expected local_shell action payload, got %#v", decoded)
+	}
+}
+
+func TestTranslateConverseResponseMapsImageGenerationCall(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "img_1",
+					Name:      "__builtin_image_generation",
+					Arguments: `{"status":"completed","revised_prompt":"A blue square","result":"Zm9v"}`,
+				},
+			},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(got.Output))
+	}
+	if got.Output[0].Type != "image_generation_call" {
+		t.Fatalf("expected image_generation_call output, got %#v", got.Output[0])
+	}
+	encoded, err := json.Marshal(got.Output[0])
+	if err != nil {
+		t.Fatalf("expected image_generation output item to marshal, got %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("expected marshaled image generation output to decode, got %v", err)
+	}
+	if decoded["status"] != "completed" || decoded["result"] != "Zm9v" || decoded["revised_prompt"] != "A blue square" {
+		t.Fatalf("expected image generation payload to be preserved, got %#v", decoded)
 	}
 }
 

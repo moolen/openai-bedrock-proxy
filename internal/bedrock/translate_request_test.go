@@ -255,6 +255,95 @@ func TestTranslateConversationMapsWebSearchTools(t *testing.T) {
 	}
 }
 
+func TestTranslateConversationMapsToolSearchTools(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Search tools"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type:        "tool_search",
+				Name:        "__builtin_tool_search",
+				Description: "Search tools",
+				BuiltIn:     true,
+				Config: map[string]json.RawMessage{
+					"execution":  json.RawMessage(`"client"`),
+					"parameters": json.RawMessage(`{"type":"object"}`),
+				},
+			},
+		},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ToolConfig == nil || len(got.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected translated tool_search config, got %#v", got.ToolConfig)
+	}
+	toolSearch := got.ToolConfig.Tools[0]
+	if toolSearch.InputSchema["x-openai-tool-type"] != "tool_search" {
+		t.Fatalf("expected tool_search schema metadata, got %#v", toolSearch.InputSchema)
+	}
+	properties, ok := toolSearch.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool_search schema properties, got %#v", toolSearch.InputSchema)
+	}
+	if _, ok := properties["query"]; !ok {
+		t.Fatalf("expected tool_search schema to expose query input, got %#v", properties)
+	}
+	if _, ok := properties["limit"]; !ok {
+		t.Fatalf("expected tool_search schema to expose limit input, got %#v", properties)
+	}
+}
+
+func TestTranslateConversationMapsLocalShellTools(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Run pwd"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type:    "local_shell",
+				Name:    "__builtin_local_shell",
+				BuiltIn: true,
+			},
+		},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ToolConfig == nil || len(got.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected translated local_shell config, got %#v", got.ToolConfig)
+	}
+	localShell := got.ToolConfig.Tools[0]
+	if localShell.InputSchema["x-openai-tool-type"] != "local_shell" {
+		t.Fatalf("expected local_shell schema metadata, got %#v", localShell.InputSchema)
+	}
+	properties, ok := localShell.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected local_shell schema properties, got %#v", localShell.InputSchema)
+	}
+	if _, ok := properties["type"]; !ok {
+		t.Fatalf("expected local_shell schema to expose action type, got %#v", properties)
+	}
+	if _, ok := properties["command"]; !ok {
+		t.Fatalf("expected local_shell schema to expose command input, got %#v", properties)
+	}
+}
+
 func TestTranslateConversationMapsToolUseAndToolResultBlocks(t *testing.T) {
 	request := conversation.Request{
 		Messages: []conversation.Message{

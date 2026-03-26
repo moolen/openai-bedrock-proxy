@@ -287,6 +287,51 @@ func syntheticBuiltInInputSchema(tool conversation.ToolDefinition) (map[string]a
 		}
 		schema["required"] = []any{"query"}
 		schema["additionalProperties"] = false
+	case "tool_search":
+		schema["properties"] = map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "Search query for tools",
+			},
+			"limit": map[string]any{
+				"type":        "number",
+				"description": "Maximum number of tools to return",
+			},
+		}
+		schema["required"] = []any{"query"}
+		schema["additionalProperties"] = false
+	case "local_shell":
+		schema["properties"] = map[string]any{
+			"type": map[string]any{
+				"type":        "string",
+				"description": "Local shell action type",
+			},
+			"command": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "string",
+				},
+				"description": "Command to execute",
+			},
+			"timeout_ms": map[string]any{
+				"type":        "number",
+				"description": "Optional timeout in milliseconds",
+			},
+			"working_directory": map[string]any{
+				"type":        "string",
+				"description": "Optional working directory",
+			},
+			"user": map[string]any{
+				"type":        "string",
+				"description": "Optional user to run as",
+			},
+			"env": map[string]any{
+				"type":        "object",
+				"description": "Optional environment overrides",
+			},
+		}
+		schema["required"] = []any{"type", "command"}
+		schema["additionalProperties"] = false
 	case "custom":
 		schema["properties"] = map[string]any{
 			"input": map[string]any{

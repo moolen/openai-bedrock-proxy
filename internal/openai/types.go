@@ -61,7 +61,9 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 	delete(raw, "name")
 	delete(raw, "function")
 	delete(raw, "description")
-	delete(raw, "parameters")
+	if decoded.Type == "function" {
+		delete(raw, "parameters")
+	}
 	delete(raw, "strict")
 	delete(raw, "defer_loading")
 
@@ -156,14 +158,38 @@ type ContentItem struct {
 }
 
 type OutputItem struct {
-	Type      string         `json:"type"`
-	Role      string         `json:"role,omitempty"`
-	Content   []ContentItem  `json:"content,omitempty"`
-	CallID    string         `json:"call_id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     string         `json:"input,omitempty"`
-	Arguments string         `json:"arguments,omitempty"`
-	Action    map[string]any `json:"action,omitempty"`
+	Type          string         `json:"type"`
+	ID            string         `json:"id,omitempty"`
+	Role          string         `json:"role,omitempty"`
+	Content       []ContentItem  `json:"content,omitempty"`
+	CallID        string         `json:"call_id,omitempty"`
+	Status        string         `json:"status,omitempty"`
+	Execution     string         `json:"execution,omitempty"`
+	Name          string         `json:"name,omitempty"`
+	Input         string         `json:"input,omitempty"`
+	Arguments     string         `json:"arguments,omitempty"`
+	Action        map[string]any `json:"action,omitempty"`
+	Result        string         `json:"result,omitempty"`
+	RevisedPrompt string         `json:"revised_prompt,omitempty"`
+	Raw           map[string]any `json:"-"`
+}
+
+func (o OutputItem) MarshalJSON() ([]byte, error) {
+	if len(o.Raw) > 0 {
+		raw := make(map[string]any, len(o.Raw)+1)
+		for key, value := range o.Raw {
+			raw[key] = value
+		}
+		if _, ok := raw["type"]; !ok && o.Type != "" {
+			raw["type"] = o.Type
+		}
+		return json.Marshal(raw)
+	}
+
+	type outputItemAlias OutputItem
+	alias := outputItemAlias(o)
+	alias.Raw = nil
+	return json.Marshal(alias)
 }
 
 type Response struct {

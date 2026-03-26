@@ -101,6 +101,43 @@ func translateToolCallItem(call ToolCall) openai.OutputItem {
 		}
 	}
 	if toolType, ok := syntheticBuiltInType(call.Name); ok {
+		switch toolType {
+		case "tool_search":
+			return openai.OutputItem{
+				Type: "tool_search_call",
+				Raw: map[string]any{
+					"type":      "tool_search_call",
+					"call_id":   call.ID,
+					"execution": "client",
+					"arguments": parseToolCallPayload(call.Arguments),
+				},
+			}
+		case "local_shell":
+			return openai.OutputItem{
+				Type: "local_shell_call",
+				Raw: map[string]any{
+					"type":    "local_shell_call",
+					"call_id": call.ID,
+					"status":  "completed",
+					"action":  parseLocalShellAction(call.Arguments),
+				},
+			}
+		case "image_generation":
+			raw := parseToolCallObject(call.Arguments)
+			payload := map[string]any{
+				"type":   "image_generation_call",
+				"id":     firstNonEmptyString(raw["id"], call.ID),
+				"status": firstNonEmptyString(raw["status"], "completed"),
+				"result": firstNonEmptyString(raw["result"], ""),
+			}
+			if revisedPrompt := firstNonEmptyString(raw["revised_prompt"]); revisedPrompt != "" {
+				payload["revised_prompt"] = revisedPrompt
+			}
+			return openai.OutputItem{
+				Type: "image_generation_call",
+				Raw:  payload,
+			}
+		}
 		return openai.OutputItem{
 			Type:   builtInToolCallOutputType(toolType),
 			CallID: call.ID,
@@ -156,16 +193,10 @@ func builtInToolCallOutputType(toolType string) string {
 }
 
 func parseToolCallAction(arguments string) map[string]any {
-	arguments = normalizeArgumentsString(arguments)
-
-	var parsed any
-	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
-		return map[string]any{"input": arguments}
-	}
-	if object, ok := parsed.(map[string]any); ok {
+	if object, ok := parseToolCallPayload(arguments).(map[string]any); ok {
 		return object
 	}
-	return map[string]any{"input": parsed}
+	return map[string]any{"input": normalizeArgumentsString(arguments)}
 }
 
 func parseCustomToolInput(arguments string) string {
@@ -191,4 +222,47 @@ func normalizeArgumentsString(arguments string) string {
 		return "{}"
 	}
 	return arguments
+}
+
+func parseToolCallPayload(arguments string) any {
+	arguments = normalizeArgumentsString(arguments)
+
+	var parsed any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+		return map[string]any{"input": arguments}
+	}
+	return parsed
+}
+
+func parseToolCallObject(arguments string) map[string]any {
+	parsed, ok := parseToolCallPayload(arguments).(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return parsed
+}
+
+func parseLocalShellAction(arguments string) map[string]any {
+	object := parseToolCallObject(arguments)
+	if _, ok := object["type"].(string); ok {
+		return object
+	}
+
+	action := map[string]any{
+		"type": "exec",
+	}
+	for key, value := range object {
+		action[key] = value
+	}
+	return action
+}
+
+func firstNonEmptyString(values ...any) string {
+	for _, value := range values {
+		text, ok := value.(string)
+		if ok && text != "" {
+			return text
+		}
+	}
+	return ""
 }

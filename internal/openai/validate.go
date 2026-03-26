@@ -13,6 +13,9 @@ var supportedBuiltInToolTypes = map[string]struct{}{
 	"file_search":          {},
 	"computer_use_preview": {},
 	"code_interpreter":     {},
+	"tool_search":          {},
+	"local_shell":          {},
+	"image_generation":     {},
 }
 
 func ValidateResponsesRequest(req ResponsesRequest) error {
@@ -353,6 +356,36 @@ func isValidBlock(role string, block map[string]any) bool {
 		}
 		_, ok = block["output"]
 		return ok
+	case "tool_search_output":
+		if role != "user" {
+			return false
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return false
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return false
+		}
+		statusValue, ok := block["status"]
+		if !ok {
+			return false
+		}
+		status, ok := statusValue.(string)
+		if !ok || status == "" {
+			return false
+		}
+		executionValue, ok := block["execution"]
+		if !ok {
+			return false
+		}
+		execution, ok := executionValue.(string)
+		if !ok || execution == "" {
+			return false
+		}
+		_, ok = block["tools"]
+		return ok
 	case "function_call":
 		if role != "assistant" {
 			return false
@@ -378,6 +411,28 @@ func isValidBlock(role string, block map[string]any) bool {
 			return ok
 		}
 		return true
+	case "tool_search_call":
+		if role != "assistant" {
+			return false
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return false
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return false
+		}
+		executionValue, ok := block["execution"]
+		if !ok {
+			return false
+		}
+		execution, ok := executionValue.(string)
+		if !ok || execution == "" {
+			return false
+		}
+		_, ok = block["arguments"]
+		return ok
 	case "custom_tool_call":
 		if role != "assistant" {
 			return false
@@ -404,6 +459,46 @@ func isValidBlock(role string, block map[string]any) bool {
 		}
 		_, ok = inputValue.(string)
 		return ok
+	case "local_shell_call":
+		if role != "assistant" {
+			return false
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return false
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return false
+		}
+		_, ok = block["action"]
+		return ok
+	case "image_generation_call":
+		if role != "assistant" {
+			return false
+		}
+		idValue, ok := block["id"]
+		if !ok {
+			return false
+		}
+		id, ok := idValue.(string)
+		if !ok || id == "" {
+			return false
+		}
+		statusValue, ok := block["status"]
+		if !ok {
+			return false
+		}
+		status, ok := statusValue.(string)
+		if !ok || status == "" {
+			return false
+		}
+		resultValue, ok := block["result"]
+		if !ok {
+			return false
+		}
+		result, ok := resultValue.(string)
+		return ok && result != ""
 	default:
 		return false
 	}

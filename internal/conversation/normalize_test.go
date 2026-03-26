@@ -185,6 +185,40 @@ func TestNormalizeRequestNormalizesBuiltInToolsIntoSyntheticDefinitions(t *testi
 	}
 }
 
+func TestNormalizeRequestPreservesCodexBuiltInMetadata(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []openai.Tool{
+			{
+				Type:        "tool_search",
+				Description: "Search app tools",
+				Config: map[string]json.RawMessage{
+					"execution":  json.RawMessage(`"client"`),
+					"parameters": json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`),
+				},
+			},
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+	if len(normalized.Tools) != 1 {
+		t.Fatalf("expected 1 normalized tool, got %#v", normalized.Tools)
+	}
+	if normalized.Tools[0].Description != "Search app tools" {
+		t.Fatalf("expected built-in description to be preserved, got %#v", normalized.Tools[0])
+	}
+	if string(normalized.Tools[0].Config["execution"]) != `"client"` {
+		t.Fatalf("expected built-in execution metadata to be preserved, got %#v", normalized.Tools[0].Config)
+	}
+	if _, ok := normalized.Tools[0].Config["parameters"]; !ok {
+		t.Fatalf("expected built-in parameters metadata to be preserved, got %#v", normalized.Tools[0].Config)
+	}
+}
+
 func TestNormalizeRequestNormalizesCodexCustomToolsIntoSyntheticDefinitions(t *testing.T) {
 	req := openai.ResponsesRequest{
 		Model: "model",
@@ -316,6 +350,92 @@ func TestNormalizeRequestNormalizesCustomToolCallOutputsIntoUserBlocks(t *testin
 	}
 	if normalized.Messages[0].Blocks[0].ToolResult.Output != "ok" {
 		t.Fatalf("expected custom output to map, got %#v", normalized.Messages[0].Blocks[0].ToolResult)
+	}
+}
+
+func TestNormalizeRequestNormalizesToolSearchOutputsIntoUserBlocks(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: []map[string]any{
+			{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":      "tool_search_output",
+						"call_id":   "search_1",
+						"status":    "completed",
+						"execution": "client",
+						"tools": []any{
+							map[string]any{"name": "calendar_create"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+	result := normalized.Messages[0].Blocks[0].ToolResult
+	if result == nil || result.CallID != "search_1" {
+		t.Fatalf("expected tool_search output to normalize into tool result, got %#v", normalized.Messages)
+	}
+	output, ok := result.Output.(map[string]any)
+	if !ok || output["type"] != "tool_search_output" || output["status"] != "completed" || output["execution"] != "client" {
+		t.Fatalf("unexpected normalized tool_search output: %#v", result.Output)
+	}
+}
+
+func TestNormalizeRequestNormalizesCodexAssistantToolCalls(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: []map[string]any{
+			{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":      "tool_search_call",
+						"call_id":   "search_1",
+						"execution": "client",
+						"arguments": map[string]any{"query": "calendar"},
+					},
+					map[string]any{
+						"type":    "local_shell_call",
+						"call_id": "shell_1",
+						"action": map[string]any{
+							"type":    "exec",
+							"command": []any{"pwd"},
+						},
+					},
+					map[string]any{
+						"type":           "image_generation_call",
+						"id":             "img_1",
+						"status":         "completed",
+						"revised_prompt": "A blue square",
+						"result":         "Zm9v",
+					},
+				},
+			},
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+	if len(normalized.Messages) != 1 || len(normalized.Messages[0].Blocks) != 3 {
+		t.Fatalf("expected normalized assistant blocks, got %#v", normalized.Messages)
+	}
+	if normalized.Messages[0].Blocks[0].ToolCall == nil || normalized.Messages[0].Blocks[0].ToolCall.Name != syntheticBuiltInToolName("tool_search") {
+		t.Fatalf("expected tool_search call to normalize, got %#v", normalized.Messages[0].Blocks[0])
+	}
+	if normalized.Messages[0].Blocks[1].ToolCall == nil || normalized.Messages[0].Blocks[1].ToolCall.Name != syntheticBuiltInToolName("local_shell") {
+		t.Fatalf("expected local_shell call to normalize, got %#v", normalized.Messages[0].Blocks[1])
+	}
+	if normalized.Messages[0].Blocks[2].Type != BlockTypeText || normalized.Messages[0].Blocks[2].Text == "" {
+		t.Fatalf("expected image generation call to normalize into text context, got %#v", normalized.Messages[0].Blocks[2])
 	}
 }
 
