@@ -201,47 +201,93 @@ func isSupportedInput(input any) bool {
 		return true
 	}
 
-	if message, ok := input.(map[string]any); ok {
-		return isValidMessage(message)
+	if item, ok := input.(map[string]any); ok {
+		return isValidInputItem(item)
 	}
 
-	if messages, ok := input.([]map[string]any); ok {
-		return isValidMessageSlice(messages)
+	if items, ok := input.([]map[string]any); ok {
+		return isValidInputItemSlice(items)
 	}
 
-	if messages, ok := input.([]any); ok {
-		return isValidMessageItems(messages)
+	if items, ok := input.([]any); ok {
+		return isValidInputItems(items)
 	}
 
 	return false
 }
 
-func isValidMessageSlice(messages []map[string]any) bool {
-	if len(messages) == 0 {
+func isValidInputItemSlice(items []map[string]any) bool {
+	if len(items) == 0 {
 		return false
 	}
-	for _, message := range messages {
-		if !isValidMessage(message) {
+	for _, item := range items {
+		if !isValidInputItem(item) {
 			return false
 		}
 	}
 	return true
 }
 
-func isValidMessageItems(messages []any) bool {
-	if len(messages) == 0 {
+func isValidInputItems(items []any) bool {
+	if len(items) == 0 {
 		return false
 	}
-	for _, item := range messages {
-		message, ok := item.(map[string]any)
+	for _, item := range items {
+		object, ok := item.(map[string]any)
 		if !ok {
 			return false
 		}
-		if !isValidMessage(message) {
+		if !isValidInputItem(object) {
 			return false
 		}
 	}
 	return true
+}
+
+func isValidInputItem(item map[string]any) bool {
+	if isMessageLikeInputItem(item) {
+		return isValidMessage(item)
+	}
+	return isValidStandaloneInputItem(item)
+}
+
+func isMessageLikeInputItem(item map[string]any) bool {
+	if _, ok := item["role"]; ok {
+		return true
+	}
+	typeValue, ok := item["type"]
+	if !ok {
+		return false
+	}
+	itemType, ok := typeValue.(string)
+	return ok && itemType == "message"
+}
+
+func isValidStandaloneInputItem(item map[string]any) bool {
+	typeValue, ok := item["type"]
+	if !ok {
+		return false
+	}
+	itemType, ok := typeValue.(string)
+	if !ok {
+		return false
+	}
+	role, ok := standaloneInputItemRole(itemType)
+	if !ok {
+		return false
+	}
+	return isValidBlock(role, item)
+}
+
+func standaloneInputItemRole(itemType string) (string, bool) {
+	switch itemType {
+	case "function_call_output", "custom_tool_call_output", "mcp_tool_call_output", "tool_search_output":
+		return "user", true
+	case "function_call", "tool_search_call", "custom_tool_call", "local_shell_call", "image_generation_call":
+		return "assistant", true
+	default:
+		return "", false
+	}
 }
 
 func isValidMessage(message map[string]any) bool {
@@ -342,7 +388,7 @@ func isValidBlock(role string, block map[string]any) bool {
 		}
 		text, ok := textValue.(string)
 		return ok && text != ""
-	case "function_call_output", "custom_tool_call_output":
+	case "function_call_output", "custom_tool_call_output", "mcp_tool_call_output":
 		if role != "user" {
 			return false
 		}

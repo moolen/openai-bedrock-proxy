@@ -439,6 +439,86 @@ func TestNormalizeRequestNormalizesCodexAssistantToolCalls(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestNormalizesMixedTopLevelResponseInputItems(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: []any{
+			map[string]any{"role": "developer", "content": "be brief"},
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "hello"},
+				},
+			},
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_1",
+				"name":      "lookup",
+				"arguments": `{"q":"weather"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_1",
+				"output":  "sunny",
+			},
+			map[string]any{
+				"type":    "mcp_tool_call_output",
+				"call_id": "call_mcp_1",
+				"output": map[string]any{
+					"content": []any{
+						map[string]any{"type": "text", "text": "done"},
+					},
+					"isError": false,
+				},
+			},
+			map[string]any{
+				"type":   "image_generation_call",
+				"id":     "img_1",
+				"status": "completed",
+				"result": "Zm9v",
+			},
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+
+	if len(normalized.System) != 1 || normalized.System[0] != "be brief" {
+		t.Fatalf("expected developer input to map into system instructions, got %#v", normalized.System)
+	}
+	if len(normalized.Messages) != 5 {
+		t.Fatalf("expected 5 persisted messages, got %#v", normalized.Messages)
+	}
+	if normalized.Messages[0].Role != "user" || normalized.Messages[0].Blocks[0].Text != "hello" {
+		t.Fatalf("unexpected first normalized message: %#v", normalized.Messages[0])
+	}
+	if normalized.Messages[1].Role != "assistant" || normalized.Messages[1].Blocks[0].ToolCall == nil {
+		t.Fatalf("expected assistant tool call in second message, got %#v", normalized.Messages[1])
+	}
+	if normalized.Messages[1].Blocks[0].ToolCall.Name != "lookup" {
+		t.Fatalf("expected function call name to be preserved, got %#v", normalized.Messages[1].Blocks[0].ToolCall)
+	}
+	if normalized.Messages[2].Role != "user" || normalized.Messages[2].Blocks[0].ToolResult == nil {
+		t.Fatalf("expected function output in third message, got %#v", normalized.Messages[2])
+	}
+	if normalized.Messages[2].Blocks[0].ToolResult.CallID != "call_1" || normalized.Messages[2].Blocks[0].ToolResult.Output != "sunny" {
+		t.Fatalf("unexpected function output normalization: %#v", normalized.Messages[2].Blocks[0].ToolResult)
+	}
+	if normalized.Messages[3].Role != "user" || normalized.Messages[3].Blocks[0].ToolResult == nil {
+		t.Fatalf("expected MCP output in fourth message, got %#v", normalized.Messages[3])
+	}
+	mcpOutput, ok := normalized.Messages[3].Blocks[0].ToolResult.Output.(map[string]any)
+	if !ok || mcpOutput["isError"] != false {
+		t.Fatalf("unexpected MCP output normalization: %#v", normalized.Messages[3].Blocks[0].ToolResult.Output)
+	}
+	if normalized.Messages[4].Role != "assistant" || normalized.Messages[4].Blocks[0].Type != BlockTypeText || normalized.Messages[4].Blocks[0].Text == "" {
+		t.Fatalf("expected image generation replay in fifth message, got %#v", normalized.Messages[4])
+	}
+}
+
 func TestNormalizeRequestPreservesMixedTextAndToolResultOrdering(t *testing.T) {
 	req := openai.ResponsesRequest{
 		Model: "model",

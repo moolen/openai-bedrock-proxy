@@ -69,21 +69,21 @@ func normalizeInput(input any) ([]string, []Message, error) {
 		blocks := []Block{{Type: BlockTypeText, Text: value}}
 		return nil, []Message{{Role: "user", Blocks: blocks}}, nil
 	case map[string]any:
-		return normalizeMessage(value)
+		return normalizeInputItem(value)
 	case []map[string]any:
-		return normalizeMessageSlice(value)
+		return normalizeInputItemSlice(value)
 	case []any:
-		return normalizeMessageItems(value)
+		return normalizeInputItems(value)
 	default:
 		return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
 	}
 }
 
-func normalizeMessageSlice(messages []map[string]any) ([]string, []Message, error) {
-	system := make([]string, 0, len(messages))
-	persisted := make([]Message, 0, len(messages))
-	for _, message := range messages {
-		messageSystem, messagePersisted, err := normalizeMessage(message)
+func normalizeInputItemSlice(items []map[string]any) ([]string, []Message, error) {
+	system := make([]string, 0, len(items))
+	persisted := make([]Message, 0, len(items))
+	for _, item := range items {
+		messageSystem, messagePersisted, err := normalizeInputItem(item)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -93,15 +93,15 @@ func normalizeMessageSlice(messages []map[string]any) ([]string, []Message, erro
 	return system, persisted, nil
 }
 
-func normalizeMessageItems(messages []any) ([]string, []Message, error) {
-	system := make([]string, 0, len(messages))
-	persisted := make([]Message, 0, len(messages))
-	for _, item := range messages {
-		message, ok := item.(map[string]any)
+func normalizeInputItems(items []any) ([]string, []Message, error) {
+	system := make([]string, 0, len(items))
+	persisted := make([]Message, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
 		if !ok {
 			return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
 		}
-		messageSystem, messagePersisted, err := normalizeMessage(message)
+		messageSystem, messagePersisted, err := normalizeInputItem(object)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -109,6 +109,59 @@ func normalizeMessageItems(messages []any) ([]string, []Message, error) {
 		persisted = append(persisted, messagePersisted...)
 	}
 	return system, persisted, nil
+}
+
+func normalizeInputItem(item map[string]any) ([]string, []Message, error) {
+	if isMessageLikeInputItem(item) {
+		return normalizeMessage(item)
+	}
+	return normalizeStandaloneInputItem(item)
+}
+
+func isMessageLikeInputItem(item map[string]any) bool {
+	if _, ok := item["role"]; ok {
+		return true
+	}
+	typeValue, ok := item["type"]
+	if !ok {
+		return false
+	}
+	itemType, ok := typeValue.(string)
+	return ok && itemType == "message"
+}
+
+func normalizeStandaloneInputItem(item map[string]any) ([]string, []Message, error) {
+	typeValue, ok := item["type"]
+	if !ok {
+		return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+	}
+	itemType, ok := typeValue.(string)
+	if !ok {
+		return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+	}
+	role, ok := standaloneInputItemRole(itemType)
+	if !ok {
+		return nil, nil, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
+	}
+	block, err := normalizeBlock(role, item)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, []Message{{
+		Role:   role,
+		Blocks: []Block{block},
+	}}, nil
+}
+
+func standaloneInputItemRole(itemType string) (string, bool) {
+	switch itemType {
+	case "function_call_output", "custom_tool_call_output", "mcp_tool_call_output", "tool_search_output":
+		return "user", true
+	case "function_call", "tool_search_call", "custom_tool_call", "local_shell_call", "image_generation_call":
+		return "assistant", true
+	default:
+		return "", false
+	}
 }
 
 func normalizeMessage(message map[string]any) ([]string, []Message, error) {
@@ -236,30 +289,7 @@ func normalizeBlock(role string, block map[string]any) (Block, error) {
 			return Block{}, err
 		}
 		return Block{Type: BlockTypeText, Text: text}, nil
-	case "function_call_output":
-		if role != "user" {
-			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
-		}
-		callIDValue, ok := block["call_id"]
-		if !ok {
-			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
-		}
-		callID, ok := callIDValue.(string)
-		if !ok || callID == "" {
-			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
-		}
-		output, ok := block["output"]
-		if !ok {
-			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
-		}
-		return Block{
-			Type: BlockTypeToolResult,
-			ToolResult: &ToolResult{
-				CallID: callID,
-				Output: cloneValue(output),
-			},
-		}, nil
-	case "custom_tool_call_output":
+	case "function_call_output", "custom_tool_call_output", "mcp_tool_call_output":
 		if role != "user" {
 			return Block{}, openai.NewInvalidRequestError(invalidResponsesInputErrorMessage)
 		}

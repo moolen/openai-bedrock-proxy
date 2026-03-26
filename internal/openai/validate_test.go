@@ -178,6 +178,51 @@ func TestValidateResponsesRequestAcceptsAssistantCodexToolCalls(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestAcceptsMixedTopLevelResponseInputItems(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "hello"},
+				},
+			},
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_1",
+				"name":      "lookup",
+				"arguments": `{"q":"weather"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_1",
+				"output":  "sunny",
+			},
+			map[string]any{
+				"type":    "mcp_tool_call_output",
+				"call_id": "call_mcp_1",
+				"output": map[string]any{
+					"content": []any{
+						map[string]any{"type": "text", "text": "done"},
+					},
+					"isError": false,
+				},
+			},
+			map[string]any{
+				"type":   "image_generation_call",
+				"id":     "img_1",
+				"status": "completed",
+				"result": "Zm9v",
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected mixed top-level response input items to be accepted, got %v", err)
+	}
+}
+
 func TestValidateResponsesRequestRejectsUnsupportedContentBlock(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
