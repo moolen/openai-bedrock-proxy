@@ -21,8 +21,14 @@ type Tool struct {
 }
 
 func (t *Tool) UnmarshalJSON(data []byte) error {
-	type toolAlias Tool
-	var decoded toolAlias
+	type toolPayload struct {
+		Type        string         `json:"type"`
+		Name        string         `json:"name,omitempty"`
+		Function    *ToolFunction  `json:"function,omitempty"`
+		Description string         `json:"description,omitempty"`
+		Parameters  map[string]any `json:"parameters,omitempty"`
+	}
+	var decoded toolPayload
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
@@ -33,11 +39,36 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 	}
 	_, hasFunctionField := raw["function"]
 	_, hasNameField := raw["name"]
+
+	function := decoded.Function
+	if decoded.Type == "function" {
+		if function == nil {
+			function = &ToolFunction{}
+		}
+		if function.Name == "" {
+			function.Name = decoded.Name
+		}
+		if function.Description == "" {
+			function.Description = decoded.Description
+		}
+		if len(function.Parameters) == 0 && len(decoded.Parameters) > 0 {
+			function.Parameters = decoded.Parameters
+		}
+	}
+
 	delete(raw, "type")
 	delete(raw, "name")
 	delete(raw, "function")
+	delete(raw, "description")
+	delete(raw, "parameters")
+	delete(raw, "strict")
+	delete(raw, "defer_loading")
 
-	*t = Tool(decoded)
+	*t = Tool{
+		Type:     decoded.Type,
+		Name:     decoded.Name,
+		Function: function,
+	}
 	t.hasFunctionField = hasFunctionField
 	t.hasNameField = hasNameField
 	if len(raw) > 0 {
@@ -146,7 +177,43 @@ type Model struct {
 	Name    string `json:"name,omitempty"`
 }
 
+type CodexReasoningLevel struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
+}
+
+type CodexTruncationPolicy struct {
+	Mode  string `json:"mode"`
+	Limit int64  `json:"limit"`
+}
+
+type CodexModelInfo struct {
+	Slug                          string                `json:"slug"`
+	DisplayName                   string                `json:"display_name"`
+	Description                   string                `json:"description,omitempty"`
+	DefaultReasoningLevel         string                `json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels      []CodexReasoningLevel `json:"supported_reasoning_levels"`
+	ShellType                     string                `json:"shell_type"`
+	Visibility                    string                `json:"visibility"`
+	SupportedInAPI                bool                  `json:"supported_in_api"`
+	Priority                      int                   `json:"priority"`
+	BaseInstructions              string                `json:"base_instructions"`
+	SupportsReasoningSummaries    bool                  `json:"supports_reasoning_summaries"`
+	DefaultReasoningSummary       string                `json:"default_reasoning_summary"`
+	SupportVerbosity              bool                  `json:"support_verbosity"`
+	WebSearchToolType             string                `json:"web_search_tool_type"`
+	TruncationPolicy              CodexTruncationPolicy `json:"truncation_policy"`
+	SupportsParallelToolCalls     bool                  `json:"supports_parallel_tool_calls"`
+	SupportsImageDetailOriginal   bool                  `json:"supports_image_detail_original"`
+	ContextWindow                 *int64                `json:"context_window,omitempty"`
+	EffectiveContextWindowPercent int                   `json:"effective_context_window_percent"`
+	ExperimentalSupportedTools    []string              `json:"experimental_supported_tools"`
+	InputModalities               []string              `json:"input_modalities"`
+	SupportsSearchTool            bool                  `json:"supports_search_tool"`
+}
+
 type ModelsList struct {
-	Object string  `json:"object"`
-	Data   []Model `json:"data"`
+	Object string           `json:"object"`
+	Data   []Model          `json:"data"`
+	Models []CodexModelInfo `json:"models"`
 }

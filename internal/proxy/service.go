@@ -31,6 +31,7 @@ type Service struct {
 }
 
 const defaultUsageSessionCapacity = 4096
+const codexBaseInstructions = "You are Codex, a coding assistant."
 
 func NewService(client BedrockConversation, store conversation.Store) *Service {
 	return &Service{
@@ -211,6 +212,7 @@ func (s *Service) ListModels(ctx context.Context) (openai.ModelsList, error) {
 	}
 
 	data := make([]openai.Model, 0, len(models))
+	codexModels := make([]openai.CodexModelInfo, 0, len(models))
 	for _, model := range models {
 		owner := model.Provider
 		if owner == "" {
@@ -222,12 +224,45 @@ func (s *Service) ListModels(ctx context.Context) (openai.ModelsList, error) {
 			OwnedBy: owner,
 			Name:    model.Name,
 		})
+		codexModels = append(codexModels, codexModelInfo(model))
 	}
 
 	return openai.ModelsList{
 		Object: "list",
 		Data:   data,
+		Models: codexModels,
 	}, nil
+}
+
+func codexModelInfo(model bedrock.ModelSummary) openai.CodexModelInfo {
+	displayName := model.Name
+	if displayName == "" {
+		displayName = model.ID
+	}
+
+	contextWindow := int64(272_000)
+	return openai.CodexModelInfo{
+		Slug:                          model.ID,
+		DisplayName:                   displayName,
+		SupportedReasoningLevels:      []openai.CodexReasoningLevel{},
+		ShellType:                     "default",
+		Visibility:                    "list",
+		SupportedInAPI:                true,
+		Priority:                      99,
+		BaseInstructions:              codexBaseInstructions,
+		SupportsReasoningSummaries:    false,
+		DefaultReasoningSummary:       "auto",
+		SupportVerbosity:              false,
+		WebSearchToolType:             "text",
+		TruncationPolicy:              openai.CodexTruncationPolicy{Mode: "bytes", Limit: 10_000},
+		SupportsParallelToolCalls:     false,
+		SupportsImageDetailOriginal:   false,
+		ContextWindow:                 &contextWindow,
+		EffectiveContextWindowPercent: 95,
+		ExperimentalSupportedTools:    []string{},
+		InputModalities:               []string{"text", "image"},
+		SupportsSearchTool:            false,
+	}
 }
 
 func (s *Service) GetModel(ctx context.Context, id string) (openai.Model, error) {

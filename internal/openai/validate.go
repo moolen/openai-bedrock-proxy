@@ -28,17 +28,16 @@ func ValidateResponsesRequest(req ResponsesRequest) error {
 	if err := validateToolChoice(req.ToolChoice, functionToolNames); err != nil {
 		return err
 	}
-	if req.ParallelToolCalls != nil {
-		return NewInvalidRequestError("parallel_tool_calls is not supported")
-	}
 	return nil
 }
 
 func collectFunctionToolNames(tools []Tool) map[string]struct{} {
 	names := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
-		if tool.Type == "function" && tool.Function != nil && tool.Function.Name != "" {
-			names[tool.Function.Name] = struct{}{}
+		if tool.Type == "function" {
+			if name := functionToolName(tool); name != "" {
+				names[name] = struct{}{}
+			}
 		}
 	}
 	return names
@@ -51,16 +50,17 @@ func validateTools(tools []Tool) error {
 			return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].type is required")
 		}
 		if tool.Type == "function" {
-			if tool.Function == nil || tool.Function.Name == "" {
+			name := functionToolName(tool)
+			if name == "" {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name is required")
 			}
-			if tool.Name != "" && tool.Name != tool.Function.Name {
+			if tool.Name != "" && tool.Name != name {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].name must match tools[" + strconv.Itoa(idx) + "].function.name")
 			}
-			if _, ok := seenFunctionNames[tool.Function.Name]; ok {
+			if _, ok := seenFunctionNames[name]; ok {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name duplicates a previous tool")
 			}
-			seenFunctionNames[tool.Function.Name] = struct{}{}
+			seenFunctionNames[name] = struct{}{}
 			continue
 		}
 		if _, ok := supportedBuiltInToolTypes[tool.Type]; !ok {
@@ -74,6 +74,13 @@ func validateTools(tools []Tool) error {
 		}
 	}
 	return nil
+}
+
+func functionToolName(tool Tool) string {
+	if tool.Function != nil && tool.Function.Name != "" {
+		return tool.Function.Name
+	}
+	return tool.Name
 }
 
 func validateToolChoice(choice *ToolChoice, functionToolNames map[string]struct{}) error {

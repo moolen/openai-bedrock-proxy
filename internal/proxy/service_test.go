@@ -648,6 +648,12 @@ func TestServiceListModelsMapsBedrockModelsToOpenAIList(t *testing.T) {
 	if got.Data[0].Object != "model" {
 		t.Fatalf("expected model object, got %q", got.Data[0].Object)
 	}
+	if len(got.Models) != 2 {
+		t.Fatalf("expected codex model catalog entries, got %#v", got.Models)
+	}
+	if got.Models[0].Slug != "amazon.nova-pro-v1:0" && got.Models[0].Slug != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected codex model slug to map from model id, got %#v", got.Models[0])
+	}
 }
 
 func TestListModelsPreservesOpenAIListShapeWhileExpandingCatalog(t *testing.T) {
@@ -666,6 +672,9 @@ func TestListModelsPreservesOpenAIListShapeWhileExpandingCatalog(t *testing.T) {
 	if len(got.Data) < 2 {
 		t.Fatalf("expected expanded catalog with foundation and profile ids, got %#v", got.Data)
 	}
+	if len(got.Models) < 2 {
+		t.Fatalf("expected codex model catalog with foundation and profile ids, got %#v", got.Models)
+	}
 	seen := map[string]bool{}
 	for _, model := range got.Data {
 		seen[model.ID] = true
@@ -673,11 +682,24 @@ func TestListModelsPreservesOpenAIListShapeWhileExpandingCatalog(t *testing.T) {
 			t.Fatalf("unexpected model payload shape: %#v", model)
 		}
 	}
+	seenCodex := map[string]bool{}
+	for _, model := range got.Models {
+		seenCodex[model.Slug] = true
+		if model.DisplayName == "" || model.ShellType == "" || model.Visibility == "" {
+			t.Fatalf("unexpected codex model payload shape: %#v", model)
+		}
+	}
 	if !seen["anthropic.claude-3-7-sonnet-20250219-v1:0"] {
 		t.Fatalf("expected foundation model id in list, got %#v", got.Data)
 	}
 	if !seen["us.anthropic.claude-3-7-sonnet-20250219-v1:0"] {
 		t.Fatalf("expected profile-backed model id in list, got %#v", got.Data)
+	}
+	if !seenCodex["anthropic.claude-3-7-sonnet-20250219-v1:0"] {
+		t.Fatalf("expected foundation model slug in codex catalog, got %#v", got.Models)
+	}
+	if !seenCodex["us.anthropic.claude-3-7-sonnet-20250219-v1:0"] {
+		t.Fatalf("expected profile-backed model slug in codex catalog, got %#v", got.Models)
 	}
 }
 

@@ -44,6 +44,7 @@ type UsageService interface {
 
 func NewServer(svc Service) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/responses", handleResponsesWebsocketFallback())
 	mux.HandleFunc("POST /v1/responses", handleResponses(svc))
 	mux.HandleFunc("POST /v1/chat/completions", handleChatCompletions(svc))
 	mux.HandleFunc("POST /v1/embeddings", handleEmbeddings(svc))
@@ -53,6 +54,21 @@ func NewServer(svc Service) http.Handler {
 	mux.HandleFunc("GET /v1/usage/{session_id}", handleUsageSession(svc))
 	mux.HandleFunc("GET /health", handleHealth())
 	return mux
+}
+
+func handleResponsesWebsocketFallback() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRequestID()
+		logger := slog.Default().With(
+			"component", "httpserver",
+			"request_id", requestID,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+		logger.Info("rejecting websocket responses transport; use http fallback")
+		w.Header().Set("Upgrade", "websocket")
+		writeError(w, http.StatusUpgradeRequired, openai.NewInvalidRequestError("websocket transport is not supported; retry over HTTP"))
+	}
 }
 
 func handleResponses(svc Service) http.HandlerFunc {

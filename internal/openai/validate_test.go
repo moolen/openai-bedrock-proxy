@@ -200,8 +200,8 @@ func TestValidateResponsesRequestRejectsUnsupportedFields(t *testing.T) {
 		Input:             "hi",
 		ParallelToolCalls: ptr(true),
 	}
-	if err := ValidateResponsesRequest(req); err == nil {
-		t.Fatal("expected unsupported-field validation error")
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected parallel_tool_calls to be accepted, got %v", err)
 	}
 }
 
@@ -213,6 +213,20 @@ func TestValidateResponsesRequestAcceptsFunctionTools(t *testing.T) {
 	}
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected tools to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsResponsesAPIFunctionTools(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []Tool{{
+			Type: "function",
+			Name: "lookup",
+		}},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected Responses API tool shape to be accepted, got %v", err)
 	}
 }
 
@@ -369,6 +383,45 @@ func TestValidateResponsesRequestRejectsMalformedFunctionTool(t *testing.T) {
 		Tools: []Tool{{Type: "function"}},
 	}
 	assertInvalidRequestMessage(t, ValidateResponsesRequest(req), "tools[0].function.name is required")
+}
+
+func TestResponsesRequestUnmarshalAcceptsResponsesAPIToolShape(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{
+				"type":"function",
+				"name":"lookup",
+				"description":"A demo tool",
+				"strict":false,
+				"parameters":{"type":"object","properties":{"q":{"type":"string"}}}
+			}
+		]
+	}`)
+
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected request to unmarshal, got %v", err)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("expected one tool, got %d", len(req.Tools))
+	}
+	if req.Tools[0].Function == nil {
+		t.Fatalf("expected top-level Responses API tool shape to populate function metadata, got %#v", req.Tools[0])
+	}
+	if req.Tools[0].Function.Name != "lookup" {
+		t.Fatalf("expected tool name to be populated from top-level field, got %#v", req.Tools[0].Function)
+	}
+	if req.Tools[0].Function.Description != "A demo tool" {
+		t.Fatalf("expected tool description to be populated from top-level field, got %#v", req.Tools[0].Function)
+	}
+	if req.Tools[0].Function.Parameters["type"] != "object" {
+		t.Fatalf("expected tool parameters to be populated from top-level field, got %#v", req.Tools[0].Function.Parameters)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected top-level Responses API tool shape to validate, got %v", err)
+	}
 }
 
 func TestValidateResponsesRequestRejectsMalformedToolChoice(t *testing.T) {

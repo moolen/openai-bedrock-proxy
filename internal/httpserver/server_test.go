@@ -46,6 +46,28 @@ func TestModelsHandlerReturnsOpenAIListShape(t *testing.T) {
 			Data: []openai.Model{
 				{ID: "anthropic.claude-3-7-sonnet-20250219-v1:0", Object: "model", OwnedBy: "bedrock"},
 			},
+			Models: []openai.CodexModelInfo{
+				{
+					Slug:                          "anthropic.claude-3-7-sonnet-20250219-v1:0",
+					DisplayName:                   "Claude 3.7 Sonnet",
+					SupportedReasoningLevels:      []openai.CodexReasoningLevel{{Effort: "medium", Description: "medium"}},
+					ShellType:                     "shell_command",
+					Visibility:                    "list",
+					SupportedInAPI:                true,
+					Priority:                      1,
+					BaseInstructions:              "You are Codex, a coding assistant.",
+					SupportsReasoningSummaries:    false,
+					DefaultReasoningSummary:       "auto",
+					SupportVerbosity:              false,
+					WebSearchToolType:             "text",
+					TruncationPolicy:              openai.CodexTruncationPolicy{Mode: "bytes", Limit: 10000},
+					SupportsParallelToolCalls:     false,
+					EffectiveContextWindowPercent: 95,
+					ExperimentalSupportedTools:    []string{},
+					InputModalities:               []string{"text"},
+					SupportsSearchTool:            false,
+				},
+			},
 		},
 	}
 	rec := httptest.NewRecorder()
@@ -69,6 +91,25 @@ func TestModelsHandlerReturnsOpenAIListShape(t *testing.T) {
 	}
 	if body.Data[0].ID != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
 		t.Fatalf("expected model id to come from service, got %q", body.Data[0].ID)
+	}
+	if len(body.Models) != 1 {
+		t.Fatalf("expected one codex model, got %#v", body.Models)
+	}
+	if body.Models[0].Slug != "anthropic.claude-3-7-sonnet-20250219-v1:0" {
+		t.Fatalf("expected codex model slug to come from service, got %#v", body.Models[0])
+	}
+}
+
+func TestResponsesHandlerReturnsUpgradeRequiredForWebsocketGET(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+
+	NewServer(&fakeService{}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected 426, got %d", rec.Code)
 	}
 }
 
@@ -158,6 +199,36 @@ func TestResponsesHandlerAcceptsResponsesRequestWithTools(t *testing.T) {
 	}
 	if svc.lastRequest.Tools[0].Type != "function" || svc.lastRequest.Tools[0].Function == nil || svc.lastRequest.Tools[0].Function.Name != "lookup" {
 		t.Fatalf("expected decoded function tool, got %#v", svc.lastRequest.Tools[0])
+	}
+}
+
+func TestResponsesHandlerAcceptsResponsesAPIToolShape(t *testing.T) {
+	svc := &fakeService{
+		response: openai.Response{ID: "resp_1", Object: "response", Model: "model"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"model",
+		"input":"hi",
+		"parallel_tool_calls": false,
+		"tools":[
+			{"type":"function","name":"lookup","description":"A demo tool","strict":false,"parameters":{"type":"object"}}
+		]
+	}`))
+
+	NewServer(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(svc.lastRequest.Tools) != 1 {
+		t.Fatalf("expected one decoded tool, got %#v", svc.lastRequest.Tools)
+	}
+	if svc.lastRequest.Tools[0].Function == nil || svc.lastRequest.Tools[0].Function.Name != "lookup" {
+		t.Fatalf("expected Responses API function tool shape to populate function metadata, got %#v", svc.lastRequest.Tools[0])
+	}
+	if got := svc.lastRequest.Tools[0].Function.Parameters["type"]; got != "object" {
+		t.Fatalf("expected top-level parameters to be preserved, got %#v", svc.lastRequest.Tools[0].Function.Parameters)
 	}
 }
 
