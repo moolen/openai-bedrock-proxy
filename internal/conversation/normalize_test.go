@@ -489,8 +489,8 @@ func TestNormalizeRequestNormalizesMixedTopLevelResponseInputItems(t *testing.T)
 	if len(normalized.System) != 1 || normalized.System[0] != "be brief" {
 		t.Fatalf("expected developer input to map into system instructions, got %#v", normalized.System)
 	}
-	if len(normalized.Messages) != 5 {
-		t.Fatalf("expected 5 persisted messages, got %#v", normalized.Messages)
+	if len(normalized.Messages) != 4 {
+		t.Fatalf("expected 4 persisted messages, got %#v", normalized.Messages)
 	}
 	if normalized.Messages[0].Role != "user" || normalized.Messages[0].Blocks[0].Text != "hello" {
 		t.Fatalf("unexpected first normalized message: %#v", normalized.Messages[0])
@@ -501,21 +501,24 @@ func TestNormalizeRequestNormalizesMixedTopLevelResponseInputItems(t *testing.T)
 	if normalized.Messages[1].Blocks[0].ToolCall.Name != "lookup" {
 		t.Fatalf("expected function call name to be preserved, got %#v", normalized.Messages[1].Blocks[0].ToolCall)
 	}
-	if normalized.Messages[2].Role != "user" || normalized.Messages[2].Blocks[0].ToolResult == nil {
-		t.Fatalf("expected function output in third message, got %#v", normalized.Messages[2])
+	if normalized.Messages[2].Role != "user" || len(normalized.Messages[2].Blocks) != 2 {
+		t.Fatalf("expected grouped user outputs in third message, got %#v", normalized.Messages[2])
+	}
+	if normalized.Messages[2].Blocks[0].ToolResult == nil {
+		t.Fatalf("expected function output as first grouped block, got %#v", normalized.Messages[2].Blocks[0])
 	}
 	if normalized.Messages[2].Blocks[0].ToolResult.CallID != "call_1" || normalized.Messages[2].Blocks[0].ToolResult.Output != "sunny" {
 		t.Fatalf("unexpected function output normalization: %#v", normalized.Messages[2].Blocks[0].ToolResult)
 	}
-	if normalized.Messages[3].Role != "user" || normalized.Messages[3].Blocks[0].ToolResult == nil {
-		t.Fatalf("expected MCP output in fourth message, got %#v", normalized.Messages[3])
+	if normalized.Messages[2].Blocks[1].ToolResult == nil {
+		t.Fatalf("expected MCP output as second grouped block, got %#v", normalized.Messages[2].Blocks[1])
 	}
-	mcpOutput, ok := normalized.Messages[3].Blocks[0].ToolResult.Output.(map[string]any)
+	mcpOutput, ok := normalized.Messages[2].Blocks[1].ToolResult.Output.(map[string]any)
 	if !ok || mcpOutput["isError"] != false {
-		t.Fatalf("unexpected MCP output normalization: %#v", normalized.Messages[3].Blocks[0].ToolResult.Output)
+		t.Fatalf("unexpected MCP output normalization: %#v", normalized.Messages[2].Blocks[1].ToolResult.Output)
 	}
-	if normalized.Messages[4].Role != "assistant" || normalized.Messages[4].Blocks[0].Type != BlockTypeText || normalized.Messages[4].Blocks[0].Text == "" {
-		t.Fatalf("expected image generation replay in fifth message, got %#v", normalized.Messages[4])
+	if normalized.Messages[3].Role != "assistant" || normalized.Messages[3].Blocks[0].Type != BlockTypeText || normalized.Messages[3].Blocks[0].Text == "" {
+		t.Fatalf("expected image generation replay in fourth message, got %#v", normalized.Messages[3])
 	}
 }
 

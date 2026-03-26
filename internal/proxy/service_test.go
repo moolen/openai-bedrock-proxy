@@ -362,6 +362,79 @@ func TestServiceRespondMergesToolResultFollowUpWithPreviousToolCall(t *testing.T
 	}
 }
 
+func TestServiceRespondGroupsAdjacentToolResultOutputsIntoSingleUserMessage(t *testing.T) {
+	store := newRecordingStore()
+	store.records["resp_prev"] = conversation.Record{
+		ResponseID: "resp_prev",
+		ModelID:    "old-model",
+		Messages: []conversation.Message{
+			textMessage("user", "use tools"),
+			{
+				Role: "assistant",
+				Blocks: []conversation.Block{
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_1",
+							Name:      "lookup_weather",
+							Arguments: `{"q":"weather"}`,
+						},
+					},
+					{
+						Type: conversation.BlockTypeToolCall,
+						ToolCall: &conversation.ToolCall{
+							ID:        "call_2",
+							Name:      "lookup_news",
+							Arguments: `{"q":"news"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+	client := &fakeBedrock{respondResp: bedrock.ConverseResponse{
+		ResponseID: "next",
+		Output: []bedrock.OutputBlock{
+			{Type: bedrock.OutputBlockTypeText, Text: "thanks"},
+		},
+	}}
+	svc := NewService(client, store)
+
+	_, err := svc.Respond(context.Background(), openai.ResponsesRequest{
+		Model:              "model",
+		PreviousResponseID: "resp_prev",
+		Input: []any{
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_1",
+				"output":  map[string]any{"answer": "sunny"},
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_2",
+				"output":  map[string]any{"headline": "quiet"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(client.lastRequest.Messages) != 3 {
+		t.Fatalf("expected previous turns plus one grouped tool-result message, got %#v", client.lastRequest.Messages)
+	}
+	last := client.lastRequest.Messages[2]
+	if last.Role != "user" || len(last.Blocks) != 2 {
+		t.Fatalf("expected grouped user tool-result blocks, got %#v", last)
+	}
+	if last.Blocks[0].ToolResult == nil || last.Blocks[0].ToolResult.CallID != "call_1" {
+		t.Fatalf("expected first grouped tool result to preserve call_1, got %#v", last.Blocks[0])
+	}
+	if last.Blocks[1].ToolResult == nil || last.Blocks[1].ToolResult.CallID != "call_2" {
+		t.Fatalf("expected second grouped tool result to preserve call_2, got %#v", last.Blocks[1])
+	}
+}
+
 func TestServiceRespondUsesIncomingModelForContinuation(t *testing.T) {
 	store := newRecordingStore()
 	store.Save(conversation.Record{

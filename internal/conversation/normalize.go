@@ -88,7 +88,7 @@ func normalizeInputItemSlice(items []map[string]any) ([]string, []Message, error
 			return nil, nil, err
 		}
 		system = append(system, messageSystem...)
-		persisted = append(persisted, messagePersisted...)
+		persisted = appendInputItemMessages(persisted, messagePersisted, isMessageLikeInputItem(item))
 	}
 	return system, persisted, nil
 }
@@ -106,9 +106,27 @@ func normalizeInputItems(items []any) ([]string, []Message, error) {
 			return nil, nil, err
 		}
 		system = append(system, messageSystem...)
-		persisted = append(persisted, messagePersisted...)
+		persisted = appendInputItemMessages(persisted, messagePersisted, isMessageLikeInputItem(object))
 	}
 	return system, persisted, nil
+}
+
+func appendInputItemMessages(existing []Message, next []Message, preserveBoundaries bool) []Message {
+	if len(next) == 0 {
+		return existing
+	}
+	if preserveBoundaries {
+		return append(existing, next...)
+	}
+	for _, message := range next {
+		lastIndex := len(existing) - 1
+		if lastIndex >= 0 && existing[lastIndex].Role == message.Role {
+			existing[lastIndex].Blocks = append(existing[lastIndex].Blocks, message.Blocks...)
+			continue
+		}
+		existing = append(existing, message)
+	}
+	return existing
 }
 
 func normalizeInputItem(item map[string]any) ([]string, []Message, error) {
