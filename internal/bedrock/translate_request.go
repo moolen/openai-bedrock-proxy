@@ -278,7 +278,7 @@ func syntheticBuiltInInputSchema(tool conversation.ToolDefinition) (map[string]a
 	}
 
 	switch tool.Type {
-	case "web_search_preview":
+	case "web_search_preview", "web_search":
 		schema["properties"] = map[string]any{
 			"query": map[string]any{
 				"type":        "string",
@@ -286,6 +286,15 @@ func syntheticBuiltInInputSchema(tool conversation.ToolDefinition) (map[string]a
 			},
 		}
 		schema["required"] = []any{"query"}
+		schema["additionalProperties"] = false
+	case "custom":
+		schema["properties"] = map[string]any{
+			"input": map[string]any{
+				"type":        "string",
+				"description": fmt.Sprintf("Raw input for %s", tool.Name),
+			},
+		}
+		schema["required"] = []any{"input"}
 		schema["additionalProperties"] = false
 	default:
 		schema["properties"] = map[string]any{

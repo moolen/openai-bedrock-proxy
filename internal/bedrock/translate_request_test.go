@@ -158,6 +158,103 @@ func TestTranslateConversationMapsToolConfigAndAutoChoice(t *testing.T) {
 	}
 }
 
+func TestTranslateConversationMapsCodexCustomTools(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Edit it"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type:        "custom",
+				Name:        "__custom_apply_patch",
+				Description: "Apply a patch",
+				BuiltIn:     true,
+				Config: map[string]json.RawMessage{
+					"format": json.RawMessage(`{"type":"grammar","syntax":"lark","definition":"start: /[\\s\\S]+/"}`),
+				},
+			},
+		},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ToolConfig == nil || len(got.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected translated custom tool config, got %#v", got.ToolConfig)
+	}
+	customTool := got.ToolConfig.Tools[0]
+	if customTool.Name != "__custom_apply_patch" {
+		t.Fatalf("expected custom tool name to pass through, got %#v", customTool)
+	}
+	if customTool.InputSchema["x-openai-tool-type"] != "custom" {
+		t.Fatalf("expected custom schema metadata, got %#v", customTool.InputSchema)
+	}
+	properties, ok := customTool.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected custom schema properties, got %#v", customTool.InputSchema)
+	}
+	input, ok := properties["input"].(map[string]any)
+	if !ok || input["type"] != "string" {
+		t.Fatalf("expected custom input schema to expose raw string input, got %#v", properties)
+	}
+	rawConfig, ok := customTool.InputSchema["x-openai-config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected custom schema config metadata, got %#v", customTool.InputSchema)
+	}
+	format, ok := rawConfig["format"].(map[string]any)
+	if !ok || format["syntax"] != "lark" {
+		t.Fatalf("expected custom format metadata to survive translation, got %#v", rawConfig)
+	}
+}
+
+func TestTranslateConversationMapsWebSearchTools(t *testing.T) {
+	request := conversation.Request{
+		Messages: []conversation.Message{
+			{
+				Role: "user",
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockTypeText, Text: "Search"},
+				},
+			},
+		},
+		Tools: []conversation.ToolDefinition{
+			{
+				Type:    "web_search",
+				Name:    "__builtin_web_search",
+				BuiltIn: true,
+				Config: map[string]json.RawMessage{
+					"external_web_access": json.RawMessage(`true`),
+				},
+			},
+		},
+	}
+
+	got, err := TranslateConversation("model", request, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ToolConfig == nil || len(got.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected translated web_search tool config, got %#v", got.ToolConfig)
+	}
+	webSearch := got.ToolConfig.Tools[0]
+	if webSearch.InputSchema["x-openai-tool-type"] != "web_search" {
+		t.Fatalf("expected web_search schema metadata, got %#v", webSearch.InputSchema)
+	}
+	properties, ok := webSearch.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected web_search schema properties, got %#v", webSearch.InputSchema)
+	}
+	if _, ok := properties["query"]; !ok {
+		t.Fatalf("expected web_search schema to expose query input, got %#v", properties)
+	}
+}
+
 func TestTranslateConversationMapsToolUseAndToolResultBlocks(t *testing.T) {
 	request := conversation.Request{
 		Messages: []conversation.Message{

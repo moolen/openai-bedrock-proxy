@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
@@ -299,11 +300,12 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 	}
 	defer stream.Close()
 
+	responseID := responseIDFromStreamMetadata(resp)
 	logger.Info("bedrock stream started")
-	text, stopReason, usage, err := processStream(stream, w, logger)
+	output, stopReason, usage, err := processStream(stream, w, logger, responseID)
 	result := ConverseResponse{
-		ResponseID: responseIDFromStreamMetadata(resp),
-		Output:     textOutputBlocks(text),
+		ResponseID: responseID,
+		Output:     output,
 		StopReason: stopReason,
 		Usage:      usage,
 	}
@@ -320,7 +322,7 @@ func (c *Client) StreamConversation(ctx context.Context, modelID string, req con
 		"response_id", result.ResponseID,
 		"stop_reason", stopReason,
 	)
-	logger.Debug("bedrock stream final text",
+	logger.Debug("bedrock stream final output",
 		"response_id", result.ResponseID,
 		"output", result.Output,
 	)
@@ -631,41 +633,109 @@ func defaultStreamAdapter(resp *bedrockruntime.ConverseStreamOutput) (streamEven
 	return stream, nil
 }
 
-func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logger) (string, string, *Usage, error) {
-	var accumulator TextAccumulator
+type responseStreamBlockState struct {
+	messageAdded bool
+	text         TextAccumulator
+	toolCall     *ToolCall
+}
+
+func processStream(stream streamEvents, w http.ResponseWriter, logger *slog.Logger, responseID string) ([]OutputBlock, string, *Usage, error) {
+	outputs := make([]OutputBlock, 0, 2)
+	blockStates := map[int32]*responseStreamBlockState{}
 	stopReason := ""
 	var usage *Usage
 
+	if err := writeResponsesEvent(w, "response.created", map[string]any{
+		"response": map[string]any{
+			"id": responseID,
+		},
+	}); err != nil {
+		logger.Error("failed to write response created event", "error", err)
+		return nil, "", nil, err
+	}
+
 	for event := range stream.Events() {
 		switch typed := event.(type) {
-		case *bedrocktypes.ConverseStreamOutputMemberContentBlockDelta:
-			textDelta, ok := typed.Value.Delta.(*bedrocktypes.ContentBlockDeltaMemberText)
-			if !ok {
+		case *bedrocktypes.ConverseStreamOutputMemberContentBlockStart:
+			start, ok := typed.Value.Start.(*bedrocktypes.ContentBlockStartMemberToolUse)
+			if !ok || typed.Value.ContentBlockIndex == nil {
 				continue
 			}
-			accumulator.Add(textDelta.Value)
-			logger.Debug("bedrock stream text delta", "delta", textDelta.Value)
-			if err := openai.WriteEvent(w, "response.output_text.delta", map[string]any{
-				"delta": textDelta.Value,
-			}); err != nil {
-				logger.Error("failed to write text delta event", "error", err)
-				return "", "", nil, err
+			blockIndex := aws.ToInt32(typed.Value.ContentBlockIndex)
+			state := ensureResponseStreamBlockState(blockStates, blockIndex)
+			state.toolCall = &ToolCall{
+				ID:   aws.ToString(start.Value.ToolUseId),
+				Name: aws.ToString(start.Value.Name),
+			}
+			logger.Debug("bedrock stream tool call start", "index", blockIndex, "call_id", state.toolCall.ID, "name", state.toolCall.Name)
+		case *bedrocktypes.ConverseStreamOutputMemberContentBlockDelta:
+			switch delta := typed.Value.Delta.(type) {
+			case *bedrocktypes.ContentBlockDeltaMemberText:
+				blockIndex := int32(0)
+				if typed.Value.ContentBlockIndex != nil {
+					blockIndex = aws.ToInt32(typed.Value.ContentBlockIndex)
+				}
+				state := ensureResponseStreamBlockState(blockStates, blockIndex)
+				if !state.messageAdded {
+					if err := writeResponsesEvent(w, "response.output_item.added", map[string]any{
+						"item": assistantMessageOutputItem(""),
+					}); err != nil {
+						logger.Error("failed to write output item added event", "error", err)
+						return nil, "", nil, err
+					}
+					state.messageAdded = true
+				}
+				state.text.Add(delta.Value)
+				logger.Debug("bedrock stream text delta", "delta", delta.Value)
+				if err := writeResponsesEvent(w, "response.output_text.delta", map[string]any{
+					"delta": delta.Value,
+				}); err != nil {
+					logger.Error("failed to write text delta event", "error", err)
+					return nil, "", nil, err
+				}
+			case *bedrocktypes.ContentBlockDeltaMemberToolUse:
+				if typed.Value.ContentBlockIndex == nil {
+					continue
+				}
+				blockIndex := aws.ToInt32(typed.Value.ContentBlockIndex)
+				state := ensureResponseStreamBlockState(blockStates, blockIndex)
+				if state.toolCall == nil {
+					state.toolCall = &ToolCall{}
+				}
+				state.toolCall.Arguments += aws.ToString(delta.Value.Input)
+				logger.Debug("bedrock stream tool call delta", "index", blockIndex, "arguments", state.toolCall.Arguments)
+			}
+		case *bedrocktypes.ConverseStreamOutputMemberContentBlockStop:
+			if typed.Value.ContentBlockIndex == nil {
+				continue
+			}
+			blockIndex := aws.ToInt32(typed.Value.ContentBlockIndex)
+			if err := flushResponseStreamBlock(w, logger, blockStates, blockIndex, &outputs); err != nil {
+				return nil, "", nil, err
 			}
 		case *bedrocktypes.ConverseStreamOutputMemberMessageStop:
 			stopReason = string(typed.Value.StopReason)
 			logger.Debug("bedrock stream stop", "stop_reason", stopReason)
-			if err := openai.WriteEvent(w, "response.completed", map[string]any{
-				"status": stopReason,
-			}); err != nil {
-				logger.Error("failed to write response completed event", "error", err)
-				return "", "", nil, err
-			}
 		case *bedrocktypes.ConverseStreamOutputMemberMetadata:
 			usage = usageFromMetadata(typed.Value.Usage)
 		}
 	}
 
-	return accumulator.Text(), stopReason, usage, stream.Err()
+	if err := flushPendingResponseStreamBlocks(w, logger, blockStates, &outputs); err != nil {
+		return outputs, stopReason, usage, err
+	}
+	if err := stream.Err(); err != nil {
+		return outputs, stopReason, usage, err
+	}
+	if err := writeResponsesEvent(w, "response.completed", map[string]any{
+		"response": responseCompletedPayload(responseID, usage),
+		"status":   stopReason,
+	}); err != nil {
+		logger.Error("failed to write response completed event", "error", err)
+		return outputs, stopReason, usage, err
+	}
+
+	return outputs, stopReason, usage, nil
 }
 
 func textOutputBlocks(text string) []OutputBlock {
@@ -708,4 +778,127 @@ func fallbackResponseID() string {
 
 func bedrockLogger(ctx context.Context) *slog.Logger {
 	return applog.FromContext(ctx).With("component", "bedrock")
+}
+
+func ensureResponseStreamBlockState(states map[int32]*responseStreamBlockState, index int32) *responseStreamBlockState {
+	if state, ok := states[index]; ok {
+		return state
+	}
+	state := &responseStreamBlockState{}
+	states[index] = state
+	return state
+}
+
+func flushPendingResponseStreamBlocks(w http.ResponseWriter, logger *slog.Logger, states map[int32]*responseStreamBlockState, outputs *[]OutputBlock) error {
+	if len(states) == 0 {
+		return nil
+	}
+	indexes := make([]int, 0, len(states))
+	for index := range states {
+		indexes = append(indexes, int(index))
+	}
+	sort.Ints(indexes)
+	for _, index := range indexes {
+		if err := flushResponseStreamBlock(w, logger, states, int32(index), outputs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func flushResponseStreamBlock(w http.ResponseWriter, logger *slog.Logger, states map[int32]*responseStreamBlockState, index int32, outputs *[]OutputBlock) error {
+	state, ok := states[index]
+	if !ok {
+		return nil
+	}
+	defer delete(states, index)
+
+	if state.toolCall != nil {
+		item := translateToolCallItem(*state.toolCall)
+		if err := writeResponsesEvent(w, "response.output_item.done", map[string]any{
+			"item": outputItemMap(item),
+		}); err != nil {
+			logger.Error("failed to write tool call done event", "error", err)
+			return err
+		}
+		call := *state.toolCall
+		*outputs = append(*outputs, OutputBlock{
+			Type:     OutputBlockTypeToolCall,
+			ToolCall: &call,
+		})
+		return nil
+	}
+
+	text := state.text.Text()
+	if !state.messageAdded && text == "" {
+		return nil
+	}
+	if !state.messageAdded {
+		if err := writeResponsesEvent(w, "response.output_item.added", map[string]any{
+			"item": assistantMessageOutputItem(""),
+		}); err != nil {
+			logger.Error("failed to write output item added event", "error", err)
+			return err
+		}
+	}
+	if err := writeResponsesEvent(w, "response.output_item.done", map[string]any{
+		"item": assistantMessageOutputItem(text),
+	}); err != nil {
+		logger.Error("failed to write output item done event", "error", err)
+		return err
+	}
+	if text != "" {
+		*outputs = append(*outputs, OutputBlock{
+			Type: OutputBlockTypeText,
+			Text: text,
+		})
+	}
+	return nil
+}
+
+func writeResponsesEvent(w http.ResponseWriter, name string, payload map[string]any) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["type"] = name
+	return openai.WriteEvent(w, name, payload)
+}
+
+func assistantMessageOutputItem(text string) map[string]any {
+	return map[string]any{
+		"type": "message",
+		"role": "assistant",
+		"content": []any{
+			map[string]any{
+				"type": "output_text",
+				"text": text,
+			},
+		},
+	}
+}
+
+func outputItemMap(item openai.OutputItem) map[string]any {
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		return map[string]any{"type": item.Type}
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return map[string]any{"type": item.Type}
+	}
+	return decoded
+}
+
+func responseCompletedPayload(responseID string, usage *Usage) map[string]any {
+	payload := map[string]any{
+		"id": responseID,
+	}
+	if usage != nil {
+		payload["usage"] = map[string]any{
+			"input_tokens":  usage.PromptTokens,
+			"output_tokens": usage.CompletionTokens,
+			"total_tokens":  usage.TotalTokens,
+		}
+	}
+	return payload
 }

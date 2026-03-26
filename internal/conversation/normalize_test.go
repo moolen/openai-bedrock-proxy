@@ -185,6 +185,44 @@ func TestNormalizeRequestNormalizesBuiltInToolsIntoSyntheticDefinitions(t *testi
 	}
 }
 
+func TestNormalizeRequestNormalizesCodexCustomToolsIntoSyntheticDefinitions(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: "hi",
+		Tools: []openai.Tool{
+			{
+				Type:        "custom",
+				Name:        "apply_patch",
+				Description: "Apply a patch",
+				Config: map[string]json.RawMessage{
+					"format": json.RawMessage(`{"type":"grammar","syntax":"lark","definition":"start: /[\\s\\S]+/"}`),
+				},
+			},
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+
+	if len(normalized.Tools) != 1 {
+		t.Fatalf("expected 1 normalized tool, got %#v", normalized.Tools)
+	}
+	if normalized.Tools[0].Type != "custom" || normalized.Tools[0].Name != syntheticCustomToolName("apply_patch") {
+		t.Fatalf("unexpected custom tool normalization: %#v", normalized.Tools[0])
+	}
+	if normalized.Tools[0].Description != "Apply a patch" {
+		t.Fatalf("expected custom description to be preserved, got %#v", normalized.Tools[0])
+	}
+	if !normalized.Tools[0].BuiltIn {
+		t.Fatalf("expected custom tool to use synthetic built-in translation path, got %#v", normalized.Tools[0])
+	}
+	if string(normalized.Tools[0].Config["format"]) != `{"type":"grammar","syntax":"lark","definition":"start: /[\\s\\S]+/"}` {
+		t.Fatalf("unexpected custom tool config: %#v", normalized.Tools[0].Config)
+	}
+}
+
 func TestNormalizeRequestLeavesToolChoiceEmptyForNone(t *testing.T) {
 	req := openai.ResponsesRequest{
 		Model: "model",
@@ -243,6 +281,41 @@ func TestNormalizeRequestNormalizesToolResultItemsIntoUserBlocks(t *testing.T) {
 	output, ok := block.ToolResult.Output.(map[string]any)
 	if !ok || output["ok"] != true {
 		t.Fatalf("unexpected tool-result output: %#v", block.ToolResult.Output)
+	}
+}
+
+func TestNormalizeRequestNormalizesCustomToolCallOutputsIntoUserBlocks(t *testing.T) {
+	req := openai.ResponsesRequest{
+		Model: "model",
+		Input: []map[string]any{
+			{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "custom_tool_call_output",
+						"call_id": "call_custom",
+						"output":  "ok",
+					},
+				},
+			},
+		},
+	}
+
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		t.Fatalf("NormalizeRequest returned error: %v", err)
+	}
+	if len(normalized.Messages) != 1 || len(normalized.Messages[0].Blocks) != 1 {
+		t.Fatalf("expected one normalized tool result block, got %#v", normalized.Messages)
+	}
+	if normalized.Messages[0].Blocks[0].Type != BlockTypeToolResult {
+		t.Fatalf("expected tool result block, got %#v", normalized.Messages[0].Blocks[0])
+	}
+	if normalized.Messages[0].Blocks[0].ToolResult.CallID != "call_custom" {
+		t.Fatalf("expected custom call id to map, got %#v", normalized.Messages[0].Blocks[0].ToolResult)
+	}
+	if normalized.Messages[0].Blocks[0].ToolResult.Output != "ok" {
+		t.Fatalf("expected custom output to map, got %#v", normalized.Messages[0].Blocks[0].ToolResult)
 	}
 }
 

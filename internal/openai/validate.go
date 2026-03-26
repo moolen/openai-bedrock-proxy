@@ -1,11 +1,15 @@
 package openai
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 const invalidResponsesInputErrorMessage = "input must be a non-empty string or supported message object/array"
 
 var supportedBuiltInToolTypes = map[string]struct{}{
 	"web_search_preview":   {},
+	"web_search":           {},
 	"file_search":          {},
 	"computer_use_preview": {},
 	"code_interpreter":     {},
@@ -61,6 +65,15 @@ func validateTools(tools []Tool) error {
 				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function.name duplicates a previous tool")
 			}
 			seenFunctionNames[name] = struct{}{}
+			continue
+		}
+		if tool.Type == "custom" {
+			if tool.Function != nil || tool.hasFunctionField {
+				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].function is only allowed for function tools")
+			}
+			if strings.TrimSpace(tool.Name) == "" {
+				return NewInvalidRequestError("tools[" + strconv.Itoa(idx) + "].name is required")
+			}
 			continue
 		}
 		if _, ok := supportedBuiltInToolTypes[tool.Type]; !ok {
@@ -237,8 +250,9 @@ func isValidMessage(message map[string]any) bool {
 	if !ok {
 		return false
 	}
-	allowedBlockType, ok := allowedBlockTypesByRole[role]
-	if !ok {
+	switch role {
+	case "user", "system", "developer", "assistant":
+	default:
 		return false
 	}
 
@@ -258,27 +272,27 @@ func isValidMessage(message map[string]any) bool {
 	case string:
 		return content != ""
 	case []map[string]any:
-		return isValidTextBlocks(allowedBlockType, content)
+		return isValidBlocks(role, content)
 	case []any:
-		return isValidTextBlockItems(allowedBlockType, content)
+		return isValidBlockItems(role, content)
 	default:
 		return false
 	}
 }
 
-func isValidTextBlocks(allowedBlockType string, blocks []map[string]any) bool {
+func isValidBlocks(role string, blocks []map[string]any) bool {
 	if len(blocks) == 0 {
 		return false
 	}
 	for _, block := range blocks {
-		if !isValidTextBlock(allowedBlockType, block) {
+		if !isValidBlock(role, block) {
 			return false
 		}
 	}
 	return true
 }
 
-func isValidTextBlockItems(allowedBlockType string, blocks []any) bool {
+func isValidBlockItems(role string, blocks []any) bool {
 	if len(blocks) == 0 {
 		return false
 	}
@@ -287,33 +301,110 @@ func isValidTextBlockItems(allowedBlockType string, blocks []any) bool {
 		if !ok {
 			return false
 		}
-		if !isValidTextBlock(allowedBlockType, block) {
+		if !isValidBlock(role, block) {
 			return false
 		}
 	}
 	return true
 }
 
-func isValidTextBlock(allowedBlockType string, block map[string]any) bool {
+func isValidBlock(role string, block map[string]any) bool {
 	typeValue, ok := block["type"]
 	if !ok {
 		return false
 	}
 	blockType, ok := typeValue.(string)
-	if !ok || blockType != allowedBlockType {
-		return false
-	}
-	textValue, ok := block["text"]
 	if !ok {
 		return false
 	}
-	text, ok := textValue.(string)
-	return ok && text != ""
-}
 
-var allowedBlockTypesByRole = map[string]string{
-	"user":      "input_text",
-	"system":    "input_text",
-	"developer": "input_text",
-	"assistant": "output_text",
+	switch blockType {
+	case "input_text":
+		if role != "user" && role != "system" && role != "developer" {
+			return false
+		}
+		textValue, ok := block["text"]
+		if !ok {
+			return false
+		}
+		text, ok := textValue.(string)
+		return ok && text != ""
+	case "output_text":
+		if role != "assistant" {
+			return false
+		}
+		textValue, ok := block["text"]
+		if !ok {
+			return false
+		}
+		text, ok := textValue.(string)
+		return ok && text != ""
+	case "function_call_output", "custom_tool_call_output":
+		if role != "user" {
+			return false
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return false
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return false
+		}
+		_, ok = block["output"]
+		return ok
+	case "function_call":
+		if role != "assistant" {
+			return false
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return false
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return false
+		}
+		nameValue, ok := block["name"]
+		if !ok {
+			return false
+		}
+		name, ok := nameValue.(string)
+		if !ok || name == "" {
+			return false
+		}
+		if argumentsValue, ok := block["arguments"]; ok {
+			_, ok = argumentsValue.(string)
+			return ok
+		}
+		return true
+	case "custom_tool_call":
+		if role != "assistant" {
+			return false
+		}
+		callIDValue, ok := block["call_id"]
+		if !ok {
+			return false
+		}
+		callID, ok := callIDValue.(string)
+		if !ok || callID == "" {
+			return false
+		}
+		nameValue, ok := block["name"]
+		if !ok {
+			return false
+		}
+		name, ok := nameValue.(string)
+		if !ok || name == "" {
+			return false
+		}
+		inputValue, ok := block["input"]
+		if !ok {
+			return false
+		}
+		_, ok = inputValue.(string)
+		return ok
+	default:
+		return false
+	}
 }

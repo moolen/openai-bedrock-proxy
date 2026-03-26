@@ -78,6 +78,36 @@ func TestValidateResponsesRequestAcceptsArrayOfMessages(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesRequestAcceptsFunctionCallOutputsInUserMessages(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected function_call_output blocks to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsCustomToolCallOutputsInUserMessages(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "model",
+		Input: map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "custom_tool_call_output", "call_id": "call_1", "output": "ok"},
+			},
+		},
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected custom_tool_call_output blocks to be accepted, got %v", err)
+	}
+}
+
 func TestValidateResponsesRequestAcceptsAssistantEasyMessage(t *testing.T) {
 	req := ResponsesRequest{
 		Model: "model",
@@ -227,6 +257,64 @@ func TestValidateResponsesRequestAcceptsResponsesAPIFunctionTools(t *testing.T) 
 	}
 	if err := ValidateResponsesRequest(req); err != nil {
 		t.Fatalf("expected Responses API tool shape to be accepted, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsCodexCustomTools(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{
+				"type":"custom",
+				"name":"apply_patch",
+				"description":"Apply a patch",
+				"format":{"type":"grammar","syntax":"lark","definition":"start: /[\\s\\S]+/"}
+			}
+		]
+	}`)
+
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected request to unmarshal, got %v", err)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("expected one tool, got %d", len(req.Tools))
+	}
+	if req.Tools[0].Type != "custom" || req.Tools[0].Name != "apply_patch" {
+		t.Fatalf("expected custom tool metadata to be preserved, got %#v", req.Tools[0])
+	}
+	if req.Tools[0].Config == nil {
+		t.Fatalf("expected custom tool config to be preserved, got %#v", req.Tools[0])
+	}
+	if _, ok := req.Tools[0].Config["format"]; !ok {
+		t.Fatalf("expected custom tool format to be preserved, got %#v", req.Tools[0].Config)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected custom tool to validate, got %v", err)
+	}
+}
+
+func TestValidateResponsesRequestAcceptsWebSearchTools(t *testing.T) {
+	raw := []byte(`{
+		"model":"model",
+		"input":"hi",
+		"tools":[
+			{
+				"type":"web_search",
+				"external_web_access":true,
+				"user_location":{"type":"approximate","country":"DE"}
+			}
+		],
+		"tool_choice":{"type":"web_search"}
+	}`)
+
+	var req ResponsesRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("expected request to unmarshal, got %v", err)
+	}
+	if err := ValidateResponsesRequest(req); err != nil {
+		t.Fatalf("expected web_search tool to validate, got %v", err)
 	}
 }
 

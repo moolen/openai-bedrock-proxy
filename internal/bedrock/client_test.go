@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -832,11 +833,36 @@ func TestClientStreamConversationAccumulatesTextAndStopReason(t *testing.T) {
 	if resp.ResponseID == "" {
 		t.Fatalf("expected response id to be set, got %q", resp.ResponseID)
 	}
-	expected := "event: response.output_text.delta\ndata: {\"delta\":\"hello\"}\n\n" +
-		"event: response.output_text.delta\ndata: {\"delta\":\" world\"}\n\n" +
-		"event: response.completed\ndata: {\"status\":\"end_turn\"}\n\n"
-	if got := recorder.Body.String(); got != expected {
-		t.Fatalf("expected SSE body %q, got %q", expected, got)
+	streamEvents := decodeSSEEvents(t, recorder.Body.String())
+	if len(streamEvents) != 5 {
+		t.Fatalf("expected created, added, two deltas, and done events, got %#v", streamEvents)
+	}
+	if streamEvents[0].Name != "response.created" {
+		t.Fatalf("expected created event first, got %#v", streamEvents)
+	}
+	if streamEvents[1].Name != "response.output_item.added" {
+		t.Fatalf("expected output item added event second, got %#v", streamEvents)
+	}
+	if streamEvents[2].Name != "response.output_text.delta" || streamEvents[2].Data["delta"] != "hello" {
+		t.Fatalf("expected first text delta event, got %#v", streamEvents[2])
+	}
+	if streamEvents[3].Name != "response.output_text.delta" || streamEvents[3].Data["delta"] != " world" {
+		t.Fatalf("expected second text delta event, got %#v", streamEvents[3])
+	}
+	if streamEvents[4].Name != "response.output_item.done" {
+		t.Fatalf("expected output item done event last, got %#v", streamEvents)
+	}
+	doneItem, ok := streamEvents[4].Data["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final done item payload, got %#v", streamEvents[4])
+	}
+	content, ok := doneItem["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected final message content payload, got %#v", doneItem)
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok || contentItem["text"] != "hello world" {
+		t.Fatalf("expected accumulated text in final done item, got %#v", doneItem)
 	}
 }
 
@@ -883,10 +909,149 @@ func TestClientStreamWrapperNormalizesAndStreams(t *testing.T) {
 	if len(runtime.lastConverseStreamInput.Messages) != 1 {
 		t.Fatalf("expected one user message, got %d", len(runtime.lastConverseStreamInput.Messages))
 	}
-	expected := "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n" +
-		"event: response.completed\ndata: {\"status\":\"end_turn\"}\n\n"
-	if got := recorder.Body.String(); got != expected {
-		t.Fatalf("expected SSE body %q, got %q", expected, got)
+	streamEvents := decodeSSEEvents(t, recorder.Body.String())
+	if len(streamEvents) != 5 {
+		t.Fatalf("expected full typed responses stream, got %#v", streamEvents)
+	}
+	if streamEvents[0].Name != "response.created" || streamEvents[1].Name != "response.output_item.added" {
+		t.Fatalf("expected created and added events first, got %#v", streamEvents)
+	}
+	if streamEvents[2].Name != "response.output_text.delta" || streamEvents[2].Data["delta"] != "hi" {
+		t.Fatalf("expected text delta event, got %#v", streamEvents[2])
+	}
+	if streamEvents[3].Name != "response.output_item.done" {
+		t.Fatalf("expected output item done event, got %#v", streamEvents[3])
+	}
+	if streamEvents[4].Name != "response.completed" {
+		t.Fatalf("expected completed event, got %#v", streamEvents[4])
+	}
+	response, ok := streamEvents[4].Data["response"].(map[string]any)
+	if !ok || response["id"] == "" {
+		t.Fatalf("expected response payload on completed event, got %#v", streamEvents[4])
+	}
+}
+
+func TestClientStreamWrapperEmitsTypedResponsesSSE(t *testing.T) {
+	events := make(chan bedrocktypes.ConverseStreamOutput, 3)
+	events <- textDelta("hi")
+	events <- contentBlockStop(0)
+	events <- messageStop("end_turn")
+	close(events)
+
+	stream := &fakeStream{events: events}
+	runtime := &fakeRuntime{converseStreamOutput: &bedrockruntime.ConverseStreamOutput{}}
+	client := &Client{
+		runtime: runtime,
+		streamAdapter: func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+			return stream, nil
+		},
+	}
+	recorder := httptest.NewRecorder()
+
+	if err := client.Stream(context.Background(), openai.ResponsesRequest{
+		Model: "model-id",
+		Input: "hello",
+	}, recorder); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	streamEvents := decodeSSEEvents(t, recorder.Body.String())
+	if len(streamEvents) != 5 {
+		t.Fatalf("expected five stream events, got %#v", streamEvents)
+	}
+	if streamEvents[0].Name != "response.created" || streamEvents[0].Data["type"] != "response.created" {
+		t.Fatalf("expected typed response.created event, got %#v", streamEvents[0])
+	}
+	if streamEvents[1].Name != "response.output_item.added" || streamEvents[1].Data["type"] != "response.output_item.added" {
+		t.Fatalf("expected typed response.output_item.added event, got %#v", streamEvents[1])
+	}
+	if streamEvents[2].Name != "response.output_text.delta" || streamEvents[2].Data["type"] != "response.output_text.delta" {
+		t.Fatalf("expected typed response.output_text.delta event, got %#v", streamEvents[2])
+	}
+	if delta, _ := streamEvents[2].Data["delta"].(string); delta != "hi" {
+		t.Fatalf("expected text delta payload, got %#v", streamEvents[2])
+	}
+	if streamEvents[3].Name != "response.output_item.done" || streamEvents[3].Data["type"] != "response.output_item.done" {
+		t.Fatalf("expected typed response.output_item.done event, got %#v", streamEvents[3])
+	}
+	item, ok := streamEvents[3].Data["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected done event item payload, got %#v", streamEvents[3])
+	}
+	if item["type"] != "message" || item["role"] != "assistant" {
+		t.Fatalf("expected assistant message done item, got %#v", item)
+	}
+	if streamEvents[4].Name != "response.completed" || streamEvents[4].Data["type"] != "response.completed" {
+		t.Fatalf("expected typed response.completed event, got %#v", streamEvents[4])
+	}
+	if _, ok := streamEvents[4].Data["response"].(map[string]any); !ok {
+		t.Fatalf("expected response payload on completed event, got %#v", streamEvents[4])
+	}
+}
+
+func TestClientStreamConversationEmitsCustomToolCallDone(t *testing.T) {
+	events := make(chan bedrocktypes.ConverseStreamOutput, 4)
+	events <- toolUseStart(0, "call_123", "__custom_apply_patch")
+	events <- toolUseDelta(0, `{"input":"*** Begin Patch\n*** End Patch\n"}`)
+	events <- contentBlockStop(0)
+	events <- messageStop("tool_use")
+	close(events)
+
+	stream := &fakeStream{events: events}
+	runtime := &fakeRuntime{converseStreamOutput: &bedrockruntime.ConverseStreamOutput{}}
+	client := &Client{
+		runtime: runtime,
+		streamAdapter: func(*bedrockruntime.ConverseStreamOutput) (streamEvents, error) {
+			return stream, nil
+		},
+	}
+	recorder := httptest.NewRecorder()
+
+	resp, err := client.StreamConversation(context.Background(), "model-id", conversation.Request{
+		Messages: []conversation.Message{{
+			Role: "user",
+			Blocks: []conversation.Block{
+				{Type: conversation.BlockTypeText, Text: "hello"},
+			},
+		}},
+	}, nil, nil, recorder)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(resp.Output) != 1 || resp.Output[0].Type != OutputBlockTypeToolCall || resp.Output[0].ToolCall == nil {
+		t.Fatalf("expected custom tool call output block, got %#v", resp.Output)
+	}
+	if resp.Output[0].ToolCall.Name != "__custom_apply_patch" {
+		t.Fatalf("expected synthetic custom tool name to be preserved in streamed output, got %#v", resp.Output[0].ToolCall)
+	}
+
+	streamEvents := decodeSSEEvents(t, recorder.Body.String())
+	var doneEvent sseEvent
+	found := false
+	for _, event := range streamEvents {
+		if event.Name == "response.output_item.done" {
+			doneEvent = event
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected response.output_item.done event, got %#v", streamEvents)
+	}
+
+	item, ok := doneEvent.Data["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected done item payload, got %#v", doneEvent)
+	}
+	if item["type"] != "custom_tool_call" {
+		t.Fatalf("expected custom_tool_call item, got %#v", item)
+	}
+	if item["call_id"] != "call_123" || item["name"] != "apply_patch" {
+		t.Fatalf("expected translated custom tool call identity, got %#v", item)
+	}
+	if item["input"] != "*** Begin Patch\n*** End Patch\n" {
+		t.Fatalf("expected custom tool input payload, got %#v", item)
 	}
 }
 
@@ -1251,6 +1416,50 @@ type fakeRuntime struct {
 	lastInvokeModelInput    *bedrockruntime.InvokeModelInput
 	invokeModelOutputs      []*bedrockruntime.InvokeModelOutput
 	invokeModelErr          error
+}
+
+type sseEvent struct {
+	Name string
+	Data map[string]any
+}
+
+func decodeSSEEvents(t *testing.T, body string) []sseEvent {
+	t.Helper()
+
+	chunks := strings.Split(strings.TrimSpace(body), "\n\n")
+	events := make([]sseEvent, 0, len(chunks))
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+		var event sseEvent
+		for _, line := range strings.Split(chunk, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				event.Name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event.Data); err != nil {
+					t.Fatalf("failed to decode SSE JSON %q: %v", line, err)
+				}
+			}
+		}
+		if event.Name == "" {
+			t.Fatalf("missing SSE event name in chunk %q", chunk)
+		}
+		if event.Data == nil {
+			t.Fatalf("missing SSE event data in chunk %q", chunk)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func contentBlockStop(index int32) bedrocktypes.ConverseStreamOutput {
+	return &bedrocktypes.ConverseStreamOutputMemberContentBlockStop{
+		Value: bedrocktypes.ContentBlockStopEvent{
+			ContentBlockIndex: aws.Int32(index),
+		},
+	}
 }
 
 func (f *fakeRuntime) Converse(_ context.Context, input *bedrockruntime.ConverseInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {

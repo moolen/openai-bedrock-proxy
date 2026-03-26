@@ -103,6 +103,39 @@ func TestTranslateConverseResponseMapsSyntheticBuiltInToolCall(t *testing.T) {
 	}
 }
 
+func TestTranslateConverseResponseMapsSyntheticCustomToolCall(t *testing.T) {
+	resp := ConverseResponse{
+		ResponseID: "bedrock-1",
+		Output: []OutputBlock{
+			{
+				Type: OutputBlockTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call_patch",
+					Name:      "__custom_apply_patch",
+					Arguments: `{"input":"*** Begin Patch"}`,
+				},
+			},
+		},
+	}
+
+	got := TranslateResponse(resp, "model")
+	if len(got.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(got.Output))
+	}
+	if got.Output[0].Type != "custom_tool_call" {
+		t.Fatalf("expected custom_tool_call output, got %#v", got.Output[0])
+	}
+	if got.Output[0].CallID != "call_patch" {
+		t.Fatalf("expected custom call id, got %#v", got.Output[0])
+	}
+	if got.Output[0].Name != "apply_patch" {
+		t.Fatalf("expected custom tool name to be restored, got %#v", got.Output[0])
+	}
+	if got.Output[0].Input != "*** Begin Patch" {
+		t.Fatalf("expected custom input to be extracted, got %#v", got.Output[0])
+	}
+}
+
 func TestTranslateConverseResponsePreservesMixedTextAndToolOrder(t *testing.T) {
 	resp := ConverseResponse{
 		ResponseID: "bedrock-1",

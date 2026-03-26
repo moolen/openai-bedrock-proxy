@@ -14,6 +14,7 @@ type ToolFunction struct {
 type Tool struct {
 	Type             string                     `json:"type"`
 	Name             string                     `json:"name,omitempty"`
+	Description      string                     `json:"description,omitempty"`
 	Function         *ToolFunction              `json:"function,omitempty"`
 	Config           map[string]json.RawMessage `json:"-"`
 	hasFunctionField bool                       `json:"-"`
@@ -65,9 +66,10 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 	delete(raw, "defer_loading")
 
 	*t = Tool{
-		Type:     decoded.Type,
-		Name:     decoded.Name,
-		Function: function,
+		Type:        decoded.Type,
+		Name:        decoded.Name,
+		Description: decoded.Description,
+		Function:    function,
 	}
 	t.hasFunctionField = hasFunctionField
 	t.hasNameField = hasNameField
@@ -159,6 +161,7 @@ type OutputItem struct {
 	Content   []ContentItem  `json:"content,omitempty"`
 	CallID    string         `json:"call_id,omitempty"`
 	Name      string         `json:"name,omitempty"`
+	Input     string         `json:"input,omitempty"`
 	Arguments string         `json:"arguments,omitempty"`
 	Action    map[string]any `json:"action,omitempty"`
 }

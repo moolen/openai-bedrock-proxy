@@ -92,6 +92,14 @@ func translateOutputItems(blocks []OutputBlock) []openai.OutputItem {
 }
 
 func translateToolCallItem(call ToolCall) openai.OutputItem {
+	if toolName, ok := syntheticCustomToolName(call.Name); ok {
+		return openai.OutputItem{
+			Type:   "custom_tool_call",
+			CallID: call.ID,
+			Name:   toolName,
+			Input:  parseCustomToolInput(call.Arguments),
+		}
+	}
 	if toolType, ok := syntheticBuiltInType(call.Name); ok {
 		return openai.OutputItem{
 			Type:   builtInToolCallOutputType(toolType),
@@ -106,6 +114,18 @@ func translateToolCallItem(call ToolCall) openai.OutputItem {
 		Name:      call.Name,
 		Arguments: normalizeArgumentsString(call.Arguments),
 	}
+}
+
+func syntheticCustomToolName(name string) (string, bool) {
+	const prefix = "__custom_"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
+	}
+	toolName := strings.TrimPrefix(name, prefix)
+	if toolName == "" {
+		return "", false
+	}
+	return toolName, true
 }
 
 func syntheticBuiltInType(name string) (string, bool) {
@@ -146,6 +166,24 @@ func parseToolCallAction(arguments string) map[string]any {
 		return object
 	}
 	return map[string]any{"input": parsed}
+}
+
+func parseCustomToolInput(arguments string) string {
+	arguments = normalizeArgumentsString(arguments)
+
+	var parsed any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+		return arguments
+	}
+	object, ok := parsed.(map[string]any)
+	if !ok {
+		return arguments
+	}
+	input, ok := object["input"].(string)
+	if !ok {
+		return arguments
+	}
+	return input
 }
 
 func normalizeArgumentsString(arguments string) string {
